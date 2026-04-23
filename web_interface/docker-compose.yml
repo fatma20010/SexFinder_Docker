@@ -1,0 +1,47 @@
+# Run from the web_interface directory: cd web_interface && docker-compose up
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "5000:5000"
+    volumes:
+      # Live-reload backend code without rebuilding the image (app.py is otherwise COPY’d at build time)
+      - ./backend/app.py:/app/app.py
+      - ./Step_0/run_step0_mapping.sh:/app/step0_template/run_step0_mapping.sh:ro
+      - ./uploads:/app/uploads
+      - ./output:/app/output
+      - ${PWD}/../ncbi_dataset:/app/ncbi_dataset  # Reference genome
+      - ${PWD}/../data/bowtie2_index:/app/data/bowtie2_index  # Bowtie2 index
+      - /var/run/docker.sock:/var/run/docker.sock  # Allow Docker-in-Docker
+    environment:
+      - FLASK_ENV=production
+      # Host paths for pipeline container (must be absolute on the VM). Override in .env — see cloud.env.example
+      - HOST_UPLOADS_PATH=${HOST_UPLOADS_PATH:-${PWD}/uploads}
+      - HOST_OUTPUT_PATH=${HOST_OUTPUT_PATH:-${PWD}/output}
+      - HOST_PROJECT_ROOT=${HOST_PROJECT_ROOT:-${PWD}/..}
+    depends_on:
+      - frontend
+    networks:
+      - sexfindr-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html
+    networks:
+      - sexfindr-network
+
+networks:
+  sexfindr-network:
+    driver: bridge
+
+volumes:
+  uploads:
+  output:
+

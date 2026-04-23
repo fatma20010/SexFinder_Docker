@@ -1,0 +1,2 @@
+#!/bin/bash
+ADJUSTMENT_COEFFICIENT=1

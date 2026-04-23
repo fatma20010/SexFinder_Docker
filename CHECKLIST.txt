@@ -1,0 +1,41 @@
+================================================================================
+                    SEXFINDR PIPELINE - SIMPLE CHECKLIST
+================================================================================
+
+Use this checklist to make sure everything is ready!
+
+FIRST TIME SETUP (Do this once):
+---------------------------------
+[ ] Docker Desktop installed
+     → Download from: https://www.docker.com/products/docker-desktop
+     → Install it
+     → Open Docker Desktop and wait for "Docker is running"
+
+[ ] Docker image loaded
+     → Double-click: LOAD_DOCKER.bat
+     → Wait until it says "Done!"
+
+EVERY TIME YOU RUN ANALYSIS:
+-----------------------------
+[ ] Docker Desktop is running (green icon in system tray)
+
+[ ] Data files added
+     → FASTQ files in: data\fastq\
+     → OR BAM files in: data\bams\
+     → OR VCF files in: data\vcfs\
+
+[ ] Sample names added
+     → Open: Step_0\male_samples.txt
+     → Type male sample names (one per line)
+     → Save file
+     → Do same for: Step_0\female_samples.txt
+
+[ ] Ready to run!
+     → Double-click: RUN_PIPELINE.bat
+     → Wait for results in: output\ folder
+
+================================================================================
+That's it! Just check these boxes and you're ready to go!
+================================================================================
+
+

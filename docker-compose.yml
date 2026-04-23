@@ -1,0 +1,22 @@
+services:
+  sexfindr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sexfindr:latest
+    container_name: sexfindr_pipeline
+    volumes:
+      # Mount user's data directory
+      - ./data:/sexfindr/data
+      # Mount output directory
+      - ./output:/sexfindr/output
+      # Mount config (optional - user can modify)
+      - ./config.sh:/sexfindr/config.sh:ro
+    working_dir: /sexfindr
+    stdin_open: true
+    tty: true
+    environment:
+      - SEXFINDR_DIR=/sexfindr
+    command: /bin/bash
+
+

@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SexFindR - Sex Chromosome Identification Pipeline</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1>🧬 SexFindR</h1>
+                <p class="subtitle">Sex Chromosome Identification Pipeline</p>
+            </div>
+            <div class="status-indicator" id="statusIndicator">
+                <span class="status-dot" id="statusDot"></span>
+                <span id="statusText">Ready</span>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Step 1: Upload Data -->
+            <section class="card" id="uploadSection">
+                <h2>Step 1: Upload Your Data</h2>
+                <p class="card-description">Select your data type and upload your files</p>
+                
+                <div class="data-type-selector">
+                    <label class="radio-option">
+                        <input type="radio" name="dataType" value="bam" checked>
+                        <div class="radio-content">
+                            <strong>BAM Files</strong>
+                            <span>Aligned sequencing data (for Step 1)</span>
+                        </div>
+                    </label>
+                    <label class="radio-option">
+                        <input type="radio" name="dataType" value="fastq">
+                        <div class="radio-content">
+                            <strong>FASTQ Files</strong>
+                            <span>Raw sequencing reads (for Step 0)</span>
+                        </div>
+                    </label>
+                    <label class="radio-option">
+                        <input type="radio" name="dataType" value="vcf">
+                        <div class="radio-content">
+                            <strong>VCF Files</strong>
+                            <span>Variant calls — runs Step 2 SNP density (VCFtools)</span>
+                        </div>
+                    </label>
+                </div>
+
+                <div class="upload-area" id="uploadArea">
+                    <input type="file" id="fileInput" multiple accept=".bam,.fastq,.fq,.vcf,.gz">
+                    <div class="upload-content">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="17 8 12 3 7 8"></polyline>
+                            <line x1="12" y1="3" x2="12" y2="15"></line>
+                        </svg>
+                        <p><strong>Click to upload</strong> or drag and drop</p>
+                        <p class="upload-hint">Supports: .bam, .fastq, .fq, .vcf, .gz (max 10GB per file)</p>
+                    </div>
+                </div>
+                <div id="uploadProgressWrap" class="upload-progress-wrap" style="display:none;margin-top:1rem;">
+                    <div class="progress-bar-container"><div class="progress-bar" id="uploadProgressBar" style="width:0%"></div></div>
+                    <p id="uploadProgressText" class="upload-hint" style="margin-top:0.5rem;"></p>
+                </div>
+
+                <div id="uploadedFiles" class="uploaded-files"></div>
+            </section>
+
+            <!-- Step 1.5: Sample Lists (for FASTQ files) -->
+            <section class="card" id="sampleListsSection" style="display: none;">
+                <h2>Step 1.5: Sample Lists (Required for FASTQ Files)</h2>
+                <p class="card-description">Add your sample IDs. These must match your FASTQ file names (without _R1/_R2).</p>
+                
+                <div class="sample-lists-container">
+                    <div class="sample-list-group">
+                        <label for="maleSamples">Male Sample IDs</label>
+                        <textarea id="maleSamples" rows="6" placeholder="sample_male_1&#10;sample_male_2&#10;sample_male_3"></textarea>
+                        <small>One sample ID per line. Must match FASTQ file names (e.g., if file is "sample_male_1_R1.fastq", use "sample_male_1")</small>
+                    </div>
+                    
+                    <div class="sample-list-group">
+                        <label for="femaleSamples">Female Sample IDs</label>
+                        <textarea id="femaleSamples" rows="6" placeholder="sample_female_1&#10;sample_female_2&#10;sample_female_3"></textarea>
+                        <small>One sample ID per line. Must match FASTQ file names (e.g., if file is "sample_female_1_R1.fastq", use "sample_female_1")</small>
+                    </div>
+                </div>
+                
+                <div class="sample-lists-actions">
+                    <button id="saveSampleListsButton" class="btn btn-secondary">Save Sample Lists</button>
+                    <button id="loadSampleListsButton" class="btn btn-secondary">Load from Server</button>
+                    <label for="loadSampleListsFileInput" class="btn btn-secondary" style="cursor: pointer; display: inline-block;">
+                        Browse from Computer
+                        <input type="file" id="loadSampleListsFileInput" accept=".txt" style="display: none;" />
+                    </label>
+                </div>
+            </section>
+
+            <!-- Pipeline paths (required for FASTQ / Step 0) -->
+            <section class="card" id="pipelinePathsSection">
+                <h2>Pipeline paths (required for FASTQ → Step 0)</h2>
+                <p class="card-description">Full path on your computer to the reference genome file and Bowtie2 index folder. Save after filling.</p>
+                <div class="form-group">
+                    <label for="referenceGenomePath">Reference genome file path</label>
+                    <input type="text" id="referenceGenomePath" placeholder="e.g. C:\Users\...\GCA_907165135.1_OKI2018_I68_1.0_genomic.fna">
+                    <small>Full path to the .fna reference file (one file).</small>
+                </div>
+                <div class="form-group">
+                    <label for="bowtie2IndexPath">Bowtie2 index directory path</label>
+                    <input type="text" id="bowtie2IndexPath" placeholder="e.g. C:\Users\...\bowtie2_index">
+                    <small>Full path to the folder containing the .bt2 index files (e.g. Oikopleura_dioica.1.bt2).</small>
+                </div>
+                <button id="savePipelinePathsButton" class="btn btn-secondary">Save pipeline paths</button>
+            </section>
+
+            <!-- Step 2: Configure Parameters -->
+            <section class="card" id="configSection">
+                <h2>Step 2: Configure Parameters</h2>
+                <p class="card-description">This is the <strong>web form step 2</strong> (not DifCover’s internal “stage 2”). AC is passed to DifCover for Step 1 (BAM) after mapping.</p>
+                <div class="form-group">
+                    <label for="adjustmentCoefficient">Adjustment Coefficient (AC)</label>
+                    <input type="number" id="adjustmentCoefficient" value="1.0" step="0.1" min="0.1">
+                    <small>Accounts for differences in sequencing depth. Start with 1.0 if coverage is similar.</small>
+                </div>
+            </section>
+
+            <!-- Step 3: Run Pipeline -->
+            <section class="card" id="runSection">
+                <h2>Step 3: Run Pipeline</h2>
+                <button id="runButton" class="btn btn-primary" disabled>
+                    <span id="runButtonText">Start Pipeline</span>
+                </button>
+                
+                <div id="progressSection" class="progress-section" style="display: none;">
+                    <div class="progress-bar-container">
+                        <div class="progress-bar" id="progressBar"></div>
+                    </div>
+                    <p class="progress-text" id="progressText">Initializing...</p>
+                    <div class="progress-details" id="progressDetails"></div>
+                </div>
+            </section>
+
+            <!-- Step 4: Results -->
+            <section class="card" id="resultsSection" style="display: none;">
+                <h2>Step 4: Results</h2>
+                <div id="resultsContent"></div>
+                <div class="results-actions">
+                    <button id="downloadAllButton" class="btn btn-secondary">Download All Results</button>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>SexFindR Pipeline - Professional Web Interface</p>
+            <p class="footer-links">
+                <a href="#" id="clearDataLink">Clear Data</a> |
+                <a href="#" id="resetPipelineStatusLink">Reset stuck “Running” status</a> |
+                <a href="#" id="healthCheckLink">System Status</a>
+            </p>
+        </footer>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>
+

@@ -1,0 +1,11 @@
+# Male sample IDs - one per line
+# Replace these with your actual sample IDs
+# Example:
+# sample_male_1
+# sample_male_2
+# SRR8585998
+
+
+
+
+

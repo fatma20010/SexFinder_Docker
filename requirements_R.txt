@@ -1,0 +1,13 @@
+# R Package Dependencies for SexFindR Pipeline
+# CRAN:
+#   Rscript -e "install.packages(c('tidyverse', 'patchwork', 'ggpubr', 'ggthemes', 'BiocManager'), repos='https://cran.rstudio.com/')"
+# Bioconductor (DifCover stage 3):
+#   Rscript -e "BiocManager::install('DNAcopy')"
+
+tidyverse
+patchwork
+ggpubr
+ggthemes
+BiocManager
+DNAcopy
+
