@@ -1,2 +1,9 @@
 .DS_Store
 .Rhistory
+
+# Local Docker / VM disks (do not commit)
+DockerDesktopWSL/
+*.vhdx
+
+# Large user uploads and sequencing outputs (use volume mounts or LFS)
+web_interface/uploads/
