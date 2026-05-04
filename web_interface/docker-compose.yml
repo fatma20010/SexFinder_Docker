@@ -34,6 +34,8 @@ services:
       - "80:80"
     volumes:
       - ./frontend:/usr/share/nginx/html
+      # Nginx upload temps (client_body_in_file_only): on host disk, NOT container overlay
+      - ./nginx_client_temp:/var/nginx/client-body
     networks:
       - sexfindr-network
 
