@@ -73,7 +73,8 @@ def bowtie2_host_dir_for_mount(path):
 UPLOAD_FOLDER = 'uploads'
 OUTPUT_FOLDER = 'output'
 ALLOWED_EXTENSIONS = {'fastq', 'fq', 'bam', 'vcf', 'gz'}
-MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024  # 10GB max file size
+# Single-file upload limit (nginx client_max_body_size should match order-of-magnitude)
+MAX_FILE_SIZE = 40 * 1024 * 1024 * 1024  # 40 GiB — large merged BAMs can be 20–30+ GiB
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_SIZE
