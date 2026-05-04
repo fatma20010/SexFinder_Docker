@@ -28,8 +28,8 @@ RUN mkdir -p uploads/data/{fastq,bams,vcfs} uploads/Step_{0,1,2,3} output
 # Expose port
 EXPOSE 5000
 
-# Run the application
-CMD ["python", "app.py"]
+# Gunicorn: long timeout for multi-GB FASTQ/BAM uploads via nginx (Flask dev server resets on large bodies).
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--threads", "4", "--timeout", "7200", "--graceful-timeout", "60", "app:app"]
 
 
 
