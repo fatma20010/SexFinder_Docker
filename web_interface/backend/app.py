@@ -124,6 +124,41 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+def _werkzeug_spool_path(stream) -> str | None:
+    """Disk path backing a Werkzeug SpooledTemporaryFile after rollover; else None."""
+    inner = getattr(stream, "_file", None)
+    if inner is None:
+        return None
+    path = getattr(inner, "name", None)
+    if path and isinstance(path, str) and os.path.isfile(path):
+        return path
+    return None
+
+
+def save_upload_to_disk(file_storage, filepath: str) -> int:
+    """
+    Write FileStorage to filepath. Werkzeug spools large multipart files to TMPDIR first;
+    then copyfileobj would read that file and write filepath — doubling disk use (~same size twice).
+    If spool and destination share a filesystem, os.replace moves the spool in one step (no second copy).
+    """
+    parent = os.path.dirname(filepath) or "."
+    os.makedirs(parent, exist_ok=True)
+
+    spool = _werkzeug_spool_path(file_storage.stream)
+    if spool:
+        try:
+            if os.stat(spool).st_dev == os.stat(parent).st_dev:
+                os.replace(spool, filepath)
+                file_storage.stream = __import__("io").BytesIO()
+                return os.path.getsize(filepath)
+        except OSError as e:
+            print(f"Upload save: atomic replace failed, streaming copy instead: {e}")
+
+    with open(filepath, "wb") as out:
+        shutil.copyfileobj(file_storage.stream, out, length=8 * 1024 * 1024)
+    return os.path.getsize(filepath)
+
+
 def detect_data_type():
     """Detect what type of data files are present"""
     # Inside Docker container, uploads are at /app/uploads
@@ -648,10 +683,7 @@ def upload_file():
     filepath = os.path.join(upload_path, filename)
     
     try:
-        # Larger buffer speeds big FASTQ/BAM saves (Docker Desktop bind mounts can be slow).
-        with open(filepath, 'wb') as out:
-            shutil.copyfileobj(file.stream, out, length=8 * 1024 * 1024)
-        file_size = os.path.getsize(filepath)
+        file_size = save_upload_to_disk(file, filepath)
         print(f"File saved successfully: {filepath}, size: {file_size} bytes")
         
         return jsonify({
