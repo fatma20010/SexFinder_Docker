@@ -16,6 +16,7 @@ import zipfile
 import shutil
 import re
 import io
+import uuid
 
 
 def _set_multipart_tmpdir_first():
@@ -98,6 +99,10 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_SIZE
 CORS(app)  # Enable CORS for frontend
 
+# Chunked upload settings (avoids single huge multipart POST that often stalls near ~97%)
+CHUNK_DIR_NAME = '.chunk_tmp'
+CHUNK_SIZE_DEFAULT = 32 * 1024 * 1024  # 32 MiB (frontend should match)
+
 # Pipeline status tracking
 pipeline_status = {
     'status': 'idle',  # idle, running, completed, error
@@ -134,6 +139,39 @@ for step_num in [0, 1, 2, 3]:
 def allowed_file(filename):
     """Check if file extension is allowed"""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def _uploads_data_base() -> str:
+    """Return uploads/data base folder for current runtime context."""
+    if os.path.exists('/app'):
+        return '/app/uploads/data'
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(backend_dir)
+    return os.path.join(project_root, 'uploads', 'data')
+
+
+def _upload_path_for_type(data_type: str) -> str:
+    base = _uploads_data_base()
+    if data_type == 'fastq':
+        return os.path.join(base, 'fastq')
+    if data_type == 'bam':
+        return os.path.join(base, 'bams')
+    if data_type == 'vcf':
+        return os.path.join(base, 'vcfs')
+    raise ValueError(f'Invalid data type: {data_type}')
+
+
+def _chunk_tmp_dir() -> str:
+    # Keep chunk temp alongside uploads so it’s on the same filesystem (atomic rename)
+    if os.path.exists('/app'):
+        root = '/app/uploads'
+    else:
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(backend_dir)
+        root = os.path.join(project_root, 'uploads')
+    d = os.path.join(root, CHUNK_DIR_NAME)
+    os.makedirs(d, exist_ok=True)
+    return d
 
 
 def _werkzeug_spool_path(stream) -> str | None:
@@ -188,6 +226,148 @@ def save_upload_to_disk(file_storage, filepath: str) -> int:
     with open(filepath, "wb") as out:
         shutil.copyfileobj(file_storage.stream, out, length=8 * 1024 * 1024)
     return os.path.getsize(filepath)
+
+
+@app.route('/api/upload-init', methods=['POST'])
+def upload_init():
+    """
+    Initialize a chunked upload. Returns an upload_id and how many bytes already exist
+    (to support resume if a previous attempt left a partial .part file).
+    """
+    data = request.get_json(silent=True) or {}
+    filename = secure_filename(str(data.get('filename', '')).strip())
+    data_type = str(data.get('data_type', 'bam')).strip()
+    total_size = int(data.get('total_size') or 0)
+    if not filename:
+        return jsonify({'error': 'filename required'}), 400
+    if not allowed_file(filename):
+        return jsonify({'error': f'File type not allowed. Allowed: {ALLOWED_EXTENSIONS}'}), 400
+    try:
+        upload_path = _upload_path_for_type(data_type)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+    os.makedirs(upload_path, exist_ok=True)
+    # We key uploads by a random ID to avoid collisions between users/files with same name.
+    upload_id = str(uuid.uuid4())
+    part_path = os.path.join(_chunk_tmp_dir(), f'{upload_id}__{filename}.part')
+
+    # If client is resuming, it can send a prior upload_id; allow that.
+    prior_id = str(data.get('upload_id') or '').strip()
+    if prior_id:
+        upload_id = prior_id
+        part_path = os.path.join(_chunk_tmp_dir(), f'{upload_id}__{filename}.part')
+
+    existing = 0
+    if os.path.exists(part_path):
+        existing = os.path.getsize(part_path)
+        # Safety: if existing > total, start over.
+        if total_size and existing > total_size:
+            try:
+                os.remove(part_path)
+            except OSError:
+                pass
+            existing = 0
+
+    return jsonify({
+        'upload_id': upload_id,
+        'filename': filename,
+        'data_type': data_type,
+        'existing_bytes': existing,
+        'chunk_size': CHUNK_SIZE_DEFAULT,
+    })
+
+
+@app.route('/api/upload-chunk', methods=['POST'])
+def upload_chunk():
+    """
+    Receive a raw binary chunk and append at the expected offset.
+    Headers required:
+      - X-Upload-Id: upload_id
+      - X-File-Name: original file name (sanitized server-side)
+      - X-Data-Type: bam|fastq|vcf
+      - X-Chunk-Offset: integer byte offset
+      - X-Total-Size: integer total bytes
+    Body: chunk bytes (application/octet-stream)
+    """
+    upload_id = (request.headers.get('X-Upload-Id') or '').strip()
+    filename = secure_filename((request.headers.get('X-File-Name') or '').strip())
+    data_type = (request.headers.get('X-Data-Type') or 'bam').strip()
+    try:
+        offset = int((request.headers.get('X-Chunk-Offset') or '0').strip())
+        total = int((request.headers.get('X-Total-Size') or '0').strip())
+    except ValueError:
+        return jsonify({'error': 'Invalid chunk offset/total'}), 400
+
+    if not upload_id or not filename:
+        return jsonify({'error': 'Missing upload_id or filename'}), 400
+    if not allowed_file(filename):
+        return jsonify({'error': f'File type not allowed. Allowed: {ALLOWED_EXTENSIONS}'}), 400
+    try:
+        _ = _upload_path_for_type(data_type)  # validate
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+    part_path = os.path.join(_chunk_tmp_dir(), f'{upload_id}__{filename}.part')
+
+    # Enforce expected offset to support resume and prevent out-of-order corruption
+    existing = os.path.getsize(part_path) if os.path.exists(part_path) else 0
+    if offset != existing:
+        return jsonify({'error': 'offset mismatch', 'expected': existing, 'got': offset}), 409
+
+    # Stream write to disk without loading into memory
+    wrote = 0
+    try:
+        with open(part_path, 'ab') as out:
+            while True:
+                chunk = request.stream.read(8 * 1024 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+                wrote += len(chunk)
+    except Exception as e:
+        return jsonify({'error': f'chunk write failed: {e}'}), 500
+
+    new_size = existing + wrote
+    if total and new_size > total:
+        return jsonify({'error': 'received more than total', 'size': new_size, 'total': total}), 400
+
+    return jsonify({'ok': True, 'received': wrote, 'size': new_size, 'total': total})
+
+
+@app.route('/api/upload-complete', methods=['POST'])
+def upload_complete():
+    """
+    Finalize a chunked upload by atomically moving .part into uploads/data/<type>/filename.
+    """
+    data = request.get_json(silent=True) or {}
+    upload_id = str(data.get('upload_id') or '').strip()
+    filename = secure_filename(str(data.get('filename') or '').strip())
+    data_type = str(data.get('data_type') or 'bam').strip()
+    total = int(data.get('total_size') or 0)
+    if not upload_id or not filename:
+        return jsonify({'error': 'upload_id and filename required'}), 400
+    try:
+        upload_path = _upload_path_for_type(data_type)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+    part_path = os.path.join(_chunk_tmp_dir(), f'{upload_id}__{filename}.part')
+    if not os.path.exists(part_path):
+        return jsonify({'error': 'partial file not found'}), 404
+
+    size = os.path.getsize(part_path)
+    if total and size != total:
+        return jsonify({'error': 'size mismatch', 'size': size, 'total': total}), 409
+
+    os.makedirs(upload_path, exist_ok=True)
+    final_path = os.path.join(upload_path, filename)
+    try:
+        os.replace(part_path, final_path)
+    except OSError as e:
+        return jsonify({'error': f'finalize failed: {e}'}), 500
+
+    return jsonify({'message': 'File uploaded successfully', 'filename': filename, 'data_type': data_type, 'size': size})
 
 
 def detect_data_type():

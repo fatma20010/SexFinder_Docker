@@ -194,7 +194,8 @@ async function handleFiles(files) {
     const dataType = document.querySelector('input[name="dataType"]:checked').value;
 
     for (const file of files) {
-        await uploadFile(file, dataType);
+        // Chunked upload is much more reliable for multi-GB files over the internet.
+        await uploadFileChunked(file, dataType);
     }
 
     updateUploadedFilesDisplay();
@@ -360,6 +361,109 @@ async function uploadFile(file, dataType) {
         checkRunButtonState();
     } catch (error) {
         console.error('Upload error:', error);
+        setUploadProgress(false);
+        showToast(`Upload error: ${error.message}`, 'error');
+    }
+}
+
+async function uploadFileChunked(file, dataType) {
+    console.log('Uploading file (chunked):', file.name, 'Type:', dataType);
+
+    const typeCheck = validateFileForDataType(file, dataType);
+    if (!typeCheck.ok) {
+        showToast(typeCheck.msg, 'error');
+        return;
+    }
+
+    try {
+        showToast(`Starting upload: ${file.name}`, 'success');
+        setUploadProgress(true, 0, `${file.name} — starting…`);
+
+        const initRes = await fetch(`${API_BASE}/upload-init`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                filename: file.name,
+                data_type: dataType,
+                total_size: file.size
+            })
+        });
+        const init = await initRes.json().catch(() => ({}));
+        if (!initRes.ok) {
+            throw new Error(init.error || `Upload init failed (${initRes.status})`);
+        }
+
+        const uploadId = init.upload_id;
+        const chunkSize = Number(init.chunk_size || (32 * 1024 * 1024));
+        let offset = Number(init.existing_bytes || 0);
+
+        while (offset < file.size) {
+            const end = Math.min(file.size, offset + chunkSize);
+            const blob = file.slice(offset, end);
+
+            const pct = (end / file.size) * 100;
+            setUploadProgress(true, pct, `${file.name} — ${pct.toFixed(1)}% (${formatFileSize(end)} / ${formatFileSize(file.size)})`);
+
+            const chunkRes = await fetch(`${API_BASE}/upload-chunk`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/octet-stream',
+                    'X-Upload-Id': String(uploadId),
+                    'X-File-Name': String(file.name),
+                    'X-Data-Type': String(dataType),
+                    'X-Chunk-Offset': String(offset),
+                    'X-Total-Size': String(file.size),
+                },
+                body: blob,
+            });
+
+            const chunkJson = await chunkRes.json().catch(() => ({}));
+            if (!chunkRes.ok) {
+                // Resume support: server tells us expected offset
+                if (chunkRes.status === 409 && chunkJson.expected != null) {
+                    offset = Number(chunkJson.expected);
+                    continue;
+                }
+                throw new Error(chunkJson.error || `Chunk upload failed (${chunkRes.status})`);
+            }
+
+            offset = end;
+        }
+
+        setUploadProgress(true, 100, `${file.name} — finalizing on server…`);
+        const finRes = await fetch(`${API_BASE}/upload-complete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                upload_id: uploadId,
+                filename: file.name,
+                data_type: dataType,
+                total_size: file.size
+            })
+        });
+        const fin = await finRes.json().catch(() => ({}));
+        if (!finRes.ok) {
+            throw new Error(fin.error || `Finalize failed (${finRes.status})`);
+        }
+
+        const existingIndex = uploadedFiles.findIndex(f => f.name === file.name && f.type === dataType);
+        if (existingIndex === -1) {
+            uploadedFiles.push({
+                name: file.name,
+                size: file.size,
+                type: dataType,
+                uploaded: true
+            });
+        } else {
+            uploadedFiles[existingIndex].size = file.size;
+        }
+
+        setUploadProgress(false);
+        showToast(`✓ File uploaded: ${file.name}`, 'success');
+        updateUploadedFilesDisplay();
+        checkRunButtonState();
+    } catch (error) {
+        console.error('Upload error (chunked):', error);
         setUploadProgress(false);
         showToast(`Upload error: ${error.message}`, 'error');
     }
