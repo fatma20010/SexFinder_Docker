@@ -15,6 +15,24 @@ from werkzeug.utils import secure_filename
 import zipfile
 import shutil
 import re
+import io
+
+
+def _set_multipart_tmpdir_first():
+    """Before Flask/tempfile: force Werkzeug multipart spools onto the bind-mounted uploads dir."""
+    if os.path.isdir("/app/uploads"):
+        base = "/app/uploads"
+    else:
+        base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "uploads"))
+    d = os.path.join(base, ".multipart_tmp")
+    try:
+        os.makedirs(d, exist_ok=True)
+        os.environ["TMPDIR"] = d
+    except OSError as e:
+        print(f"multipart TMPDIR not set: {e}")
+
+
+_set_multipart_tmpdir_first()
 
 
 def sanitize_user_host_path(raw):
@@ -113,25 +131,32 @@ os.makedirs(os.path.join(UPLOAD_FOLDER, 'data', 'vcfs'), exist_ok=True)
 for step_num in [0, 1, 2, 3]:
     os.makedirs(os.path.join(UPLOAD_FOLDER, f'Step_{step_num}'), exist_ok=True)
 
-# Large multipart uploads: Werkzeug spools each file part to TMPDIR (often full file size).
-# Default /tmp is on the container layer; combined with nginx buffering + final save that was ~3× file size on /.
-_multipart_tmp = os.path.join(UPLOAD_FOLDER, '.multipart_tmp')
-os.makedirs(_multipart_tmp, exist_ok=True)
-os.environ.setdefault('TMPDIR', _multipart_tmp)
-
 def allowed_file(filename):
     """Check if file extension is allowed"""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
 def _werkzeug_spool_path(stream) -> str | None:
-    """Disk path backing a Werkzeug SpooledTemporaryFile after rollover; else None."""
-    inner = getattr(stream, "_file", None)
-    if inner is None:
+    """Disk path backing Werkzeug's spooled multipart body (shape varies by version)."""
+
+    def pick(path) -> str | None:
+        if path and isinstance(path, str) and os.path.isfile(path):
+            return path
         return None
-    path = getattr(inner, "name", None)
-    if path and isinstance(path, str) and os.path.isfile(path):
-        return path
+
+    inner = getattr(stream, "_file", None)
+    if inner is not None:
+        p = pick(getattr(inner, "name", None))
+        if p:
+            return p
+    p = pick(getattr(stream, "name", None))
+    if p:
+        return p
+    raw = getattr(stream, "raw", None)
+    if raw is not None:
+        p = pick(getattr(raw, "name", None))
+        if p:
+            return p
     return None
 
 
@@ -144,15 +169,21 @@ def save_upload_to_disk(file_storage, filepath: str) -> int:
     parent = os.path.dirname(filepath) or "."
     os.makedirs(parent, exist_ok=True)
 
-    spool = _werkzeug_spool_path(file_storage.stream)
+    stream = file_storage.stream
+    spool = _werkzeug_spool_path(stream)
     if spool:
         try:
             if os.stat(spool).st_dev == os.stat(parent).st_dev:
                 os.replace(spool, filepath)
-                file_storage.stream = __import__("io").BytesIO()
+                file_storage.stream = io.BytesIO()
                 return os.path.getsize(filepath)
         except OSError as e:
             print(f"Upload save: atomic replace failed, streaming copy instead: {e}")
+    else:
+        print(
+            f"Upload save: no temp spool path (stream {type(stream).__name__}) — "
+            "streaming copy uses ~2× file size on disk"
+        )
 
     with open(filepath, "wb") as out:
         shutil.copyfileobj(file_storage.stream, out, length=8 * 1024 * 1024)
