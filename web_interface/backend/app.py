@@ -113,6 +113,11 @@ os.makedirs(os.path.join(UPLOAD_FOLDER, 'data', 'vcfs'), exist_ok=True)
 for step_num in [0, 1, 2, 3]:
     os.makedirs(os.path.join(UPLOAD_FOLDER, f'Step_{step_num}'), exist_ok=True)
 
+# Large multipart uploads: Werkzeug spools each file part to TMPDIR (often full file size).
+# Default /tmp is on the container layer; combined with nginx buffering + final save that was ~3× file size on /.
+_multipart_tmp = os.path.join(UPLOAD_FOLDER, '.multipart_tmp')
+os.makedirs(_multipart_tmp, exist_ok=True)
+os.environ.setdefault('TMPDIR', _multipart_tmp)
 
 def allowed_file(filename):
     """Check if file extension is allowed"""

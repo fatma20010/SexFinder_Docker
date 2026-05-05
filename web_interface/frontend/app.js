@@ -292,10 +292,18 @@ function uploadFileXhr(file, dataType) {
         xhr.upload.addEventListener('progress', (e) => {
             if (e.lengthComputable) {
                 const pct = (e.loaded / e.total) * 100;
-                setUploadProgress(true, pct, `${file.name} — ${Math.round(pct)}% (${formatFileSize(e.loaded)} / ${formatFileSize(e.total)})`);
+                setUploadProgress(true, pct, `${file.name} — ${pct.toFixed(1)}% (${formatFileSize(e.loaded)} / ${formatFileSize(e.total)})`);
             } else {
                 setUploadProgress(true, 0, `${file.name} — uploading… ${formatFileSize(e.loaded)}`);
             }
+        });
+        // Bytes have left the browser; nginx + Flask still buffer/write to disk (can take many minutes for tens of GB).
+        xhr.upload.addEventListener('load', () => {
+            setUploadProgress(
+                true,
+                100,
+                `${file.name} — saving on server (nginx → Flask)… free disk must cover temp + final file`
+            );
         });
         xhr.onload = () => {
             let result = {};
