@@ -21,8 +21,6 @@ services:
       - HOST_UPLOADS_PATH=${HOST_UPLOADS_PATH:-${PWD}/uploads}
       - HOST_OUTPUT_PATH=${HOST_OUTPUT_PATH:-${PWD}/output}
       - HOST_PROJECT_ROOT=${HOST_PROJECT_ROOT:-${PWD}/..}
-    depends_on:
-      - frontend
     networks:
       - sexfindr-network
 
@@ -36,6 +34,8 @@ services:
       - ./frontend:/usr/share/nginx/html
       # Nginx upload temps (client_body_in_file_only): on host disk, NOT container overlay
       - ./nginx_client_temp:/var/nginx/client-body
+    depends_on:
+      - backend
     networks:
       - sexfindr-network
 

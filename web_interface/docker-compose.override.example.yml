@@ -1,0 +1,16 @@
+# Copy to docker-compose.override.yml on the droplet so Step_* and output use Block Storage
+# while the rest of ./uploads stays on the Droplet. These binds mask the broken symlinks inside
+# the container (paths must exist on the host under SEXFINDR_VOLUME_ROOT).
+#
+# 1) mkdir -p .../uploads/Step_{0..3} .../output  on the volume if needed
+# 2) echo 'SEXFINDR_VOLUME_ROOT=/mnt/volume_.../sexfindr/web_interface' >> .env
+# 3) docker compose up -d --build
+
+services:
+  backend:
+    volumes:
+      - ${SEXFINDR_VOLUME_ROOT}/uploads/Step_0:/app/uploads/Step_0
+      - ${SEXFINDR_VOLUME_ROOT}/uploads/Step_1:/app/uploads/Step_1
+      - ${SEXFINDR_VOLUME_ROOT}/uploads/Step_2:/app/uploads/Step_2
+      - ${SEXFINDR_VOLUME_ROOT}/uploads/Step_3:/app/uploads/Step_3
+      - ${SEXFINDR_VOLUME_ROOT}/output:/app/output

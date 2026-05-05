@@ -128,13 +128,27 @@ else:
     UPLOAD_FOLDER = 'uploads'
     OUTPUT_FOLDER = 'output'
 
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-os.makedirs(os.path.join(UPLOAD_FOLDER, 'data', 'fastq'), exist_ok=True)
-os.makedirs(os.path.join(UPLOAD_FOLDER, 'data', 'bams'), exist_ok=True)
-os.makedirs(os.path.join(UPLOAD_FOLDER, 'data', 'vcfs'), exist_ok=True)
+def _ensure_dir(path: str) -> None:
+    """Like os.makedirs(..., exist_ok=True) but gives a clear error if path is a broken symlink."""
+    try:
+        os.makedirs(path, exist_ok=True)
+    except FileExistsError:
+        if os.path.isdir(path):
+            return
+        raise RuntimeError(
+            f"{path} exists but is not a directory (often uploads/Step_* is a symlink to a host "
+            "path not visible in the container). Add explicit binds in "
+            "docker-compose.override.yml — see docker-compose.override.example.yml in web_interface."
+        ) from None
+
+
+_ensure_dir(UPLOAD_FOLDER)
+_ensure_dir(OUTPUT_FOLDER)
+_ensure_dir(os.path.join(UPLOAD_FOLDER, 'data', 'fastq'))
+_ensure_dir(os.path.join(UPLOAD_FOLDER, 'data', 'bams'))
+_ensure_dir(os.path.join(UPLOAD_FOLDER, 'data', 'vcfs'))
 for step_num in [0, 1, 2, 3]:
-    os.makedirs(os.path.join(UPLOAD_FOLDER, f'Step_{step_num}'), exist_ok=True)
+    _ensure_dir(os.path.join(UPLOAD_FOLDER, f'Step_{step_num}'))
 
 def allowed_file(filename):
     """Check if file extension is allowed"""
