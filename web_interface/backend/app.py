@@ -17,6 +17,7 @@ import shutil
 import re
 import io
 import uuid
+import shlex
 
 
 def _set_multipart_tmpdir_first():
@@ -173,6 +174,51 @@ def _upload_path_for_type(data_type: str) -> str:
     if data_type == 'vcf':
         return os.path.join(base, 'vcfs')
     raise ValueError(f'Invalid data type: {data_type}')
+
+
+# awk: extract chrom\tlength from @SQ (same idea as patched DifCover from_bams_to_unionbed.sh)
+_AWK_SQ_CHROM_LEN = (
+    r"awk '/^@SQ/ {sn=\"\";ln=\"\";for(i=1;i<=NF;i++){if($i~/^SN:/)sn=substr($i,4);"
+    r"if($i~/^LN:/)ln=substr($i,4)} if(sn!=\"\"&&ln~/^[0-9]+$/) print sn \"\t\" ln}'"
+)
+
+
+def _step1_prepare_bams_in_docker(upload_dir_abs: str, male_bam: str, female_bam: str) -> None:
+    """
+    For non-expert users: verify two BAMs are usable for DifCover, match the same reference,
+    and create .bai indexes if missing (samtools index inside sexfindr image).
+    """
+    q1 = shlex.quote(f'/sexfindr/data/bams/{male_bam}')
+    q2 = shlex.quote(f'/sexfindr/data/bams/{female_bam}')
+    inner = f'''
+set -e
+samtools quickcheck {q1} {q2}
+t1=$(mktemp); t2=$(mktemp); trap 'rm -f "$t1" "$t2"' EXIT
+samtools view -H {q1} | {_AWK_SQ_CHROM_LEN} | sort > "$t1"
+samtools view -H {q2} | {_AWK_SQ_CHROM_LEN} | sort > "$t2"
+if ! cmp -s "$t1" "$t2"; then
+  echo "STEP1: These two BAM files must be aligned to the same reference genome (chromosome names and lengths must match). Re-align both to one reference and upload again." >&2
+  exit 2
+fi
+for B in {q1} {q2}; do
+  if [ ! -f "${{B}}.bai" ]; then
+    echo "STEP1: Creating index .bai for $(basename "$B") — large files can take several minutes..." >&2
+    samtools index -@2 "$B" || exit 3
+  fi
+done
+'''
+    cmd = [
+        'docker', 'run', '--rm',
+        '-v', f'{upload_dir_abs}/data:/sexfindr/data',
+        'sexfindr:latest',
+        'bash', '-lc', inner,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=86400)
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or '').strip()
+        if not err:
+            err = f'BAM preparation failed (exit {proc.returncode}).'
+        raise Exception(err)
 
 
 def _chunk_tmp_dir() -> str:
@@ -525,9 +571,15 @@ def run_pipeline_step(step, data_type=None, adjustment_coefficient=1.0):
         bam_dir = os.path.join(upload_dir, 'data', 'bams')
         if not os.path.exists(bam_dir):
             raise Exception("BAM directory does not exist")
-        bam_files = [f for f in os.listdir(bam_dir) if f.endswith('.bam')]
-        if len(bam_files) < 2:
-            raise Exception("Need at least 2 BAM files (one male, one female)")
+        bam_files = sorted(
+            f for f in os.listdir(bam_dir)
+            if f.endswith('.bam') and not f.startswith('.')
+        )
+        if len(bam_files) != 2:
+            raise Exception(
+                'Step 1 needs exactly two .bam files (one male, one female). '
+                f'Found {len(bam_files)} in uploads. Remove extra BAMs or upload another file.'
+            )
 
         # Ensure run_difcover.sh exists in uploads/Step_1 with LF line endings (mount overwrites container script)
         step1_dir = os.path.join(upload_dir, 'Step_1')
@@ -552,16 +604,24 @@ def run_pipeline_step(step, data_type=None, adjustment_coefficient=1.0):
                 "Please ensure it exists in step1_template or repo Step_1."
             )
 
-        male_bam = bam_files[0]  # First BAM file
-        female_bam = bam_files[1] if len(bam_files) > 1 else bam_files[0]
+        # Alphabetical order: first = male/sample1, second = female/sample2 (rename files to swap)
+        male_bam = bam_files[0]
+        female_bam = bam_files[1]
         ac = float(adjustment_coefficient)
+
+        pipeline_status['current_step'] = 'Step 1: DifCover Analysis'
+        pipeline_status['message'] = (
+            f'Checking BAMs and indexes, then DifCover. '
+            f'Male/sample1 = {male_bam}, female/sample2 = {female_bam} (alphabetical by filename).'
+        )
+        _step1_prepare_bams_in_docker(upload_dir_abs, male_bam, female_bam)
+
         cmd = docker_cmd + [
             'bash', '-c',
             f'cd /sexfindr/Step_1 && bash run_difcover.sh '
             f'/sexfindr/data/bams/{male_bam} /sexfindr/data/bams/{female_bam} {ac}'
         ]
-        
-        pipeline_status['current_step'] = 'Step 1: DifCover Analysis'
+
         pipeline_status['message'] = f'Running DifCover: {male_bam} vs {female_bam}'
         
     elif step == 0 and data_type == 'fastq':

@@ -90,6 +90,13 @@ RUN if [ -d "/sexfindr/DifCover/dif_cover_scripts" ]; then \
         find /sexfindr/DifCover/dif_cover_scripts -type f -name '*.sh' -exec sed -i 's/unionBedGraphs/bedtools unionbedg/g' {} \; 2>/dev/null || true; \
     fi
 
+# Upstream from_bams_to_unionbed.sh often writes an empty ref.length (fragile awk on @SQ lines), which breaks unionbedg -g.
+RUN if [ -f /sexfindr/Step_1/patches/from_bams_to_unionbed.sh ]; then \
+        cp -f /sexfindr/Step_1/patches/from_bams_to_unionbed.sh \
+            /sexfindr/DifCover/dif_cover_scripts/from_bams_to_unionbed.sh && \
+        chmod +x /sexfindr/DifCover/dif_cover_scripts/from_bams_to_unionbed.sh; \
+    fi
+
 # Fix upstream DifCover bug: fname[] uninitialized before strncat (vendor fixed .cpp — do not patch at runtime)
 RUN if [ -f /sexfindr/Step_1/patches/from_unionbed_to_ratio_per_window_CC0.cpp ]; then \
         cp -f /sexfindr/Step_1/patches/from_unionbed_to_ratio_per_window_CC0.cpp \

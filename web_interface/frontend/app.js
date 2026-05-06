@@ -56,6 +56,7 @@ function initializeEventListeners() {
             const dataType = radio.value;
             const sampleListsSection = document.getElementById('sampleListsSection');
             const pipelinePathsSection = document.getElementById('pipelinePathsSection');
+            const bamStep1Help = document.getElementById('bamStep1Help');
             if (dataType === 'fastq') {
                 sampleListsSection.style.display = 'block';
                 pipelinePathsSection.style.display = 'block';
@@ -65,6 +66,9 @@ function initializeEventListeners() {
                 sampleListsSection.style.display = 'none';
                 pipelinePathsSection.style.display = 'none';
             }
+            if (bamStep1Help) {
+                bamStep1Help.style.display = dataType === 'bam' ? 'block' : 'none';
+            }
             await refreshFileList();
             checkRunButtonState();
         });
@@ -72,6 +76,10 @@ function initializeEventListeners() {
     
     // Check initial state
     const initialDataType = document.querySelector('input[name="dataType"]:checked').value;
+    const bamStep1HelpInit = document.getElementById('bamStep1Help');
+    if (bamStep1HelpInit) {
+        bamStep1HelpInit.style.display = initialDataType === 'bam' ? 'block' : 'none';
+    }
     if (initialDataType === 'fastq') {
         const sampleListsSection = document.getElementById('sampleListsSection');
         const pipelinePathsSection = document.getElementById('pipelinePathsSection');

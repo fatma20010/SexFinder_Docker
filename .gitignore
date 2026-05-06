@@ -8,3 +8,5 @@ DockerDesktopWSL/
 # Large user uploads and sequencing outputs (use volume mounts or LFS)
 web_interface/uploads/
 web_interface/nginx_client_temp/
+# Droplet-specific Block Volume binds (see docker-compose.override.example.yml)
+web_interface/docker-compose.override.yml

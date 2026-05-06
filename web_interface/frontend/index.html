@@ -33,7 +33,7 @@
                         <input type="radio" name="dataType" value="bam" checked>
                         <div class="radio-content">
                             <strong>BAM Files</strong>
-                            <span>Aligned sequencing data (for Step 1)</span>
+                            <span>Exactly two coordinate-sorted BAMs, same reference — Step 1 (DifCover) runs automatically</span>
                         </div>
                     </label>
                     <label class="radio-option">
@@ -62,6 +62,12 @@
                         </svg>
                         <p><strong>Click to upload</strong> or drag and drop</p>
                         <p class="upload-hint">Supports: .bam, .fastq, .fq, .vcf, .gz (max ~40GB per file — ensure server disk/RAM)</p>
+                        <p class="upload-hint" id="bamStep1Help">
+                            <strong>BAM mode:</strong> Upload <strong>exactly two</strong> <code>.bam</code> files only (remove older BAMs if needed).
+                            They must be aligned to the <strong>same</strong> genome. If a <code>.bai</code> index is missing, the server creates it (may take a while).
+                            <strong>Order:</strong> files are paired in <strong>A–Z order</strong> by filename — first = male / sample1, second = female / sample2
+                            (e.g. <code>A_male.bam</code> and <code>B_female.bam</code>; note <code>female.bam</code> sorts <em>before</em> <code>male.bam</code>).
+                        </p>
                     </div>
                 </div>
                 <div id="uploadProgressWrap" class="upload-progress-wrap" style="display:none;margin-top:1rem;">
