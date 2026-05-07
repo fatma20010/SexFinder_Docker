@@ -1142,14 +1142,25 @@ def get_results():
 @app.route('/api/download/<step>/<filename>', methods=['GET'])
 def download_file(step, filename):
     """Download a result file"""
+    # Frontend may pass "step_1"; normalize to "1" for on-disk "Step_1" folders.
+    step_part = str(step).strip().lower()
+    if step_part.startswith('step_'):
+        step_part = step_part.split('_', 1)[1]
+    if not re.fullmatch(r'\d+', step_part):
+        return jsonify({'error': 'Invalid step'}), 400
+    # Prevent path traversal while preserving dots/dashes in filenames.
+    safe_name = os.path.basename(filename)
+    if safe_name != filename:
+        return jsonify({'error': 'Invalid filename'}), 400
+
     # Inside Docker container, uploads are at /app/uploads
     if os.path.exists('/app'):
-        filepath = os.path.join('/app', 'uploads', f'Step_{step}', filename)
+        filepath = os.path.join('/app', 'uploads', f'Step_{step_part}', safe_name)
     else:
         # Running locally
         backend_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(backend_dir)
-        filepath = os.path.join(project_root, 'uploads', f'Step_{step}', filename)
+        filepath = os.path.join(project_root, 'uploads', f'Step_{step_part}', safe_name)
     
     if os.path.exists(filepath):
         return send_file(filepath, as_attachment=True)
