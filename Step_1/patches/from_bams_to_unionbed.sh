@@ -39,6 +39,12 @@ bedtools genomecov -bga -ibam "$bam1" > sample1.bedcov
 echo "1.2. Computing coverage for file $bam2 using bedtools: result in sample2.bedcov"
 bedtools genomecov -bga -ibam "$bam2" > sample2.bedcov
 
+if [ ! -s sample1.bedcov ] || [ ! -s sample2.bedcov ]; then
+  echo "ERROR: bedtools genomecov produced an empty bedgraph for one or both BAMs." >&2
+  echo "Check that BAMs are coordinate-sorted, indexed, and contain mapped reads." >&2
+  exit 1
+fi
+
 echo "2. Calculating length of reference_genome scaffolds from $bam1"
 
 samtools view -H "$bam1" > "$bam1.header"
@@ -59,11 +65,19 @@ if [ ! -s ref.length ]; then
   exit 1
 fi
 
-echo "3. Sort bedgraphs by contig's names (use stabilized sort with -V flag) - quite fast BUT requires memory 10 times more than size of file!"
+echo "3. Preparing inputs for unionbedg"
+# NOTE: DifCover upstream sorts massive bedgraphs with `sort -V`, which is very memory hungry and
+# frequently fails on small VMs. For coordinate-sorted BAMs, bedtools genomecov output is already
+# ordered by (chrom, start) so we reuse it directly and only sort the small ref.length.
 export LC_ALL=C
-sort -V -k1 -s sample1.bedcov > sample1.bedcov.Vk1s_sorted
-sort -V -k1 -s sample2.bedcov > sample2.bedcov.Vk1s_sorted
+mv -f sample1.bedcov sample1.bedcov.Vk1s_sorted
+mv -f sample2.bedcov sample2.bedcov.Vk1s_sorted
 sort -V -k1 -s ref.length > ref.length.Vk1s_sorted
+
+if [ ! -s ref.length.Vk1s_sorted ]; then
+  echo "ERROR: ref.length.Vk1s_sorted is empty — cannot run unionbedg." >&2
+  exit 1
+fi
 
 echo "4. Putting together coverage from two samples in one file"
 
