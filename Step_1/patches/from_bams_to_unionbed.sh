@@ -81,14 +81,30 @@ fi
 
 echo "4. Putting together coverage from two samples in one file"
 
-bedtools unionbedg -header -i sample1.bedcov.Vk1s_sorted sample2.bedcov.Vk1s_sorted -names sample1 sample2 -g ref.length.Vk1s_sorted -empty > sample1_sample2.unionbedcv_draft
+# Use unionbedg without -empty to avoid enormous all-zero intervals on small VMs.
+# This keeps biologically relevant covered intervals and dramatically reduces temp size.
+bedtools unionbedg -header -i sample1.bedcov.Vk1s_sorted sample2.bedcov.Vk1s_sorted -names sample1 sample2 > sample1_sample2.unionbedcv_draft
 
-awk '{if($3!=4294967295) print $0}' sample1_sample2.unionbedcv_draft > sample1_sample2.unionbedcv_draft1
+# Keep header plus valid genomic rows. Upstream sentinel filter ($3!=4294967295) can drop everything
+# on some bedtools/script combinations, yielding an empty unionbedcv and downstream DNAcopy failure.
+awk 'NR==1 || ($2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $3 > $2)' \
+  sample1_sample2.unionbedcv_draft > sample1_sample2.unionbedcv_draft1
 rm sample1_sample2.unionbedcv_draft
+
+if [ ! -s sample1_sample2.unionbedcv_draft1 ] || [ "$(wc -l < sample1_sample2.unionbedcv_draft1)" -le 1 ]; then
+  echo "ERROR: unionbedcv_draft1 has no data rows after unionbedg/filter." >&2
+  echo "Check Step_1 folder for sample*.bedcov.Vk1s_sorted and BAM/reference consistency." >&2
+  exit 1
+fi
 
 #Check file *unionbedcv if it has e+ numbers, if yes, convert them to decimal
 
 "$SCRIPT_PATH/convert_exp_to_dec_in_unionbed.sh" sample1_sample2.unionbedcv_draft1 > sample1_sample2.unionbedcv
+
+if [ ! -s sample1_sample2.unionbedcv ] || [ "$(wc -l < sample1_sample2.unionbedcv)" -le 1 ]; then
+  echo "ERROR: sample1_sample2.unionbedcv is empty/header-only after conversion." >&2
+  exit 1
+fi
 
 durationall=$SECONDS
 echo " OVERALL time to generate *unionbedcv from $bam1 and $bam2 was $(($durationall / 60)) minutes and $(($durationall % 60)) seconds."

@@ -65,6 +65,12 @@ else
 fi
 #$FOLDER_PATH/from_bams_to_unionbed_update.sh $BAM1 $BAM2
 
+if [ ! -s sample1_sample2.unionbedcv ] || [ "$(wc -l < sample1_sample2.unionbedcv)" -le 1 ]; then
+  echo "ERROR: Stage 1 produced an empty/header-only sample1_sample2.unionbedcv."
+  echo "Check BAM compatibility and Step_1 intermediate files (sample*.bedcov*)."
+  exit 1
+fi
+
 ## run stage (2)
 ensure_difcover_ratio_binary || exit 127
 echo "stage 2"
