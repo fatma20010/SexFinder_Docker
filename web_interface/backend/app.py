@@ -1194,48 +1194,121 @@ def download_all():
     return send_file(zip_path, as_attachment=True, download_name='sexfindr_results.zip')
 
 
+def _reset_pipeline_status_to_idle():
+    global pipeline_status, pipeline_run_data_type, pipeline_adjustment_coefficient
+    pipeline_status = {
+        'status': 'idle',
+        'current_step': None,
+        'progress': 0,
+        'message': '',
+        'start_time': None,
+        'end_time': None,
+        'results': {}
+    }
+    pipeline_run_data_type = None
+    pipeline_adjustment_coefficient = 1.0
+
+
+def _clear_pipeline_files():
+    """Remove uploaded inputs, step intermediates, and outputs for a true fresh start."""
+    uploads_dir = _get_uploads_dir()
+    data_dir = os.path.join(uploads_dir, 'data')
+
+    # Clear uploaded inputs
+    for sub in ['fastq', 'bams', 'vcfs']:
+        dir_path = os.path.join(data_dir, sub)
+        if os.path.exists(dir_path):
+            for file in os.listdir(dir_path):
+                filepath = os.path.join(dir_path, file)
+                if os.path.isfile(filepath):
+                    os.remove(filepath)
+
+    # Clear Step_* intermediate folders
+    for step_num in [0, 1, 2, 3]:
+        step_dir = os.path.join(uploads_dir, f'Step_{step_num}')
+        if os.path.exists(step_dir):
+            for file in os.listdir(step_dir):
+                filepath = os.path.join(step_dir, file)
+                if os.path.isfile(filepath):
+                    os.remove(filepath)
+                elif os.path.isdir(filepath):
+                    shutil.rmtree(filepath, ignore_errors=True)
+
+    # Clear chunk/multipart temp directories if present
+    for tmp_name in [CHUNK_DIR_NAME, '.multipart_tmp']:
+        tmp_dir = os.path.join(uploads_dir, tmp_name)
+        if os.path.exists(tmp_dir):
+            for file in os.listdir(tmp_dir):
+                filepath = os.path.join(tmp_dir, file)
+                if os.path.isfile(filepath):
+                    os.remove(filepath)
+                elif os.path.isdir(filepath):
+                    shutil.rmtree(filepath, ignore_errors=True)
+
+    # Clear output directory contents (supports absolute OUTPUT_FOLDER in Docker)
+    output_dir = OUTPUT_FOLDER if os.path.isabs(OUTPUT_FOLDER) else os.path.abspath(OUTPUT_FOLDER)
+    if os.path.exists(output_dir):
+        for item in os.listdir(output_dir):
+            p = os.path.join(output_dir, item)
+            if os.path.isfile(p):
+                os.remove(p)
+            elif os.path.isdir(p):
+                shutil.rmtree(p, ignore_errors=True)
+
+
+@app.route('/api/download-all-and-clear', methods=['GET'])
+def download_all_and_clear():
+    """
+    Download all results as a zip, then wipe pipeline files once response closes.
+    This gives non-technical users a true "download then fresh start" flow.
+    """
+    # Use a unique temp zip so we do not rely on output/all_results.zip surviving reset.
+    temp_zip = os.path.join('/tmp' if os.path.isdir('/tmp') else os.getcwd(), f'sexfindr_results_{uuid.uuid4().hex}.zip')
+
+    with zipfile.ZipFile(temp_zip, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        uploads_dir = _get_uploads_dir()
+        for step in [0, 1, 2, 3]:
+            step_dir = os.path.join(uploads_dir, f'Step_{step}')
+            if os.path.exists(step_dir):
+                for root, dirs, files in os.walk(step_dir):
+                    for file in files:
+                        filepath = os.path.join(root, file)
+                        arcname = os.path.join(f'Step_{step}', os.path.relpath(filepath, step_dir))
+                        zipf.write(filepath, arcname)
+
+        output_dir = OUTPUT_FOLDER if os.path.isabs(OUTPUT_FOLDER) else os.path.abspath(OUTPUT_FOLDER)
+        if os.path.exists(output_dir):
+            for root, dirs, files in os.walk(output_dir):
+                for file in files:
+                    filepath = os.path.join(root, file)
+                    arcname = os.path.join('output', os.path.relpath(filepath, output_dir))
+                    zipf.write(filepath, arcname)
+
+    response = send_file(temp_zip, as_attachment=True, download_name='sexfindr_results.zip')
+
+    @response.call_on_close
+    def _after_download_cleanup():
+        try:
+            _clear_pipeline_files()
+            _reset_pipeline_status_to_idle()
+        except Exception as e:
+            print(f"Post-download cleanup warning: {e}")
+        finally:
+            try:
+                if os.path.exists(temp_zip):
+                    os.remove(temp_zip)
+            except Exception as e:
+                print(f"Temp zip cleanup warning: {e}")
+
+    return response
+
+
 @app.route('/api/clear', methods=['POST'])
 def clear_data():
     """Clear uploaded files and reset pipeline"""
-    global pipeline_status
-    
     try:
-        # Inside Docker container, uploads are at /app/uploads
-        if os.path.exists('/app'):
-            upload_base = '/app/uploads/data'
-        else:
-            # Running locally
-            backend_dir = os.path.dirname(os.path.abspath(__file__))
-            project_root = os.path.dirname(backend_dir)
-            upload_base = os.path.join(project_root, 'uploads', 'data')
-        
-        # Clear uploads
-        for dtype in ['fastq', 'bam', 'vcf']:
-            if dtype == 'bam':
-                dir_path = os.path.join(upload_base, 'bams')
-            else:
-                dir_path = os.path.join(upload_base, f'{dtype}s')
-            
-            if os.path.exists(dir_path):
-                try:
-                    for file in os.listdir(dir_path):
-                        filepath = os.path.join(dir_path, file)
-                        if os.path.isfile(filepath):
-                            os.remove(filepath)
-                except Exception as e:
-                    print(f"Error clearing {dir_path}: {e}")
-        
-        # Reset status
-        pipeline_status = {
-            'status': 'idle',
-            'current_step': None,
-            'progress': 0,
-            'message': '',
-            'start_time': None,
-            'end_time': None,
-            'results': {}
-        }
-        
+        _clear_pipeline_files()
+        _reset_pipeline_status_to_idle()
         return jsonify({'message': 'Data cleared successfully'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500

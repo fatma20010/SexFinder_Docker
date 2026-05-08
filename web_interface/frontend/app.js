@@ -771,8 +771,15 @@ function displayResults(results) {
 
 async function downloadAllResults() {
     try {
-        window.location.href = `${API_BASE}/download-all`;
-        showToast('Download started', 'success');
+        // Server streams a zip and clears uploads/outputs after the response closes.
+        window.location.href = `${API_BASE}/download-all-and-clear`;
+        showToast('Download started. Data will be reset after download finishes.', 'success');
+        // Refresh UI shortly after download trigger so users see the clean state on next interaction.
+        setTimeout(() => {
+            refreshFileList();
+            loadResults();
+            checkRunButtonState();
+        }, 2500);
     } catch (error) {
         showToast('Download error: ' + error.message, 'error');
     }
