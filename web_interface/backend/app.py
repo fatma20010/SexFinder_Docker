@@ -3,7 +3,7 @@ SexFindR Web Interface - Backend API
 Flask backend for running the SexFindR pipeline via web interface
 """
 
-from flask import Flask, request, jsonify, send_file, send_from_directory
+from flask import Flask, request, jsonify, send_file, send_from_directory, Response, stream_with_context
 from flask_cors import CORS
 import os
 import subprocess
@@ -1139,7 +1139,7 @@ def get_results():
     return jsonify(pipeline_status.get('results', {}))
 
 
-@app.route('/api/download/<step>/<filename>', methods=['GET'])
+@app.route('/api/download/<step>/<path:filename>', methods=['GET'])
 def download_file(step, filename):
     """Download a result file"""
     # Frontend may pass "step_1"; normalize to "1" for on-disk "Step_1" folders.
@@ -1148,22 +1148,34 @@ def download_file(step, filename):
         step_part = step_part.split('_', 1)[1]
     if not re.fullmatch(r'\d+', step_part):
         return jsonify({'error': 'Invalid step'}), 400
-    # Prevent path traversal while preserving dots/dashes in filenames.
-    safe_name = os.path.basename(filename)
-    if safe_name != filename:
+    # Normalize and validate relative path (support nested output paths while blocking traversal).
+    rel_name = str(filename).replace('\\', '/').lstrip('/')
+    rel_name = os.path.normpath(rel_name).replace('\\', '/')
+    if rel_name in ('', '.') or rel_name.startswith('../') or '/../' in rel_name:
         return jsonify({'error': 'Invalid filename'}), 400
+    step_prefix = f'Step_{step_part}/'
+    if rel_name.startswith(step_prefix):
+        rel_name = rel_name[len(step_prefix):]
 
     # Inside Docker container, uploads are at /app/uploads
     if os.path.exists('/app'):
-        filepath = os.path.join('/app', 'uploads', f'Step_{step_part}', safe_name)
+        uploads_root = '/app/uploads'
+        output_root = '/app/output'
     else:
         # Running locally
         backend_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(backend_dir)
-        filepath = os.path.join(project_root, 'uploads', f'Step_{step_part}', safe_name)
-    
-    if os.path.exists(filepath):
-        return send_file(filepath, as_attachment=True)
+        uploads_root = os.path.join(project_root, 'uploads')
+        output_root = os.path.join(project_root, OUTPUT_FOLDER)
+
+    candidates = [
+        os.path.join(uploads_root, f'Step_{step_part}', rel_name),
+        os.path.join(output_root, f'Step_{step_part}', rel_name),
+        os.path.join(output_root, rel_name),
+    ]
+    for filepath in candidates:
+        if os.path.isfile(filepath):
+            return send_file(filepath, as_attachment=True)
     return jsonify({'error': 'File not found'}), 404
 
 
@@ -1259,47 +1271,70 @@ def _clear_pipeline_files():
 @app.route('/api/download-all-and-clear', methods=['GET'])
 def download_all_and_clear():
     """
-    Download all results as a zip, then wipe pipeline files once response closes.
-    This gives non-technical users a true "download then fresh start" flow.
+    Stream all results as a tar archive, then wipe pipeline files after successful stream.
+    Streaming starts immediately (no long pre-zip build), which avoids gateway timeouts.
     """
-    # Use a unique temp zip so we do not rely on output/all_results.zip surviving reset.
-    temp_zip = os.path.join('/tmp' if os.path.isdir('/tmp') else os.getcwd(), f'sexfindr_results_{uuid.uuid4().hex}.zip')
+    uploads_dir = _get_uploads_dir()
+    output_dir = OUTPUT_FOLDER if os.path.isabs(OUTPUT_FOLDER) else os.path.abspath(OUTPUT_FOLDER)
 
-    with zipfile.ZipFile(temp_zip, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        uploads_dir = _get_uploads_dir()
-        for step in [0, 1, 2, 3]:
-            step_dir = os.path.join(uploads_dir, f'Step_{step}')
-            if os.path.exists(step_dir):
-                for root, dirs, files in os.walk(step_dir):
-                    for file in files:
-                        filepath = os.path.join(root, file)
-                        arcname = os.path.join(f'Step_{step}', os.path.relpath(filepath, step_dir))
-                        zipf.write(filepath, arcname)
+    tar_cmd = ['tar', '-cf', '-']
+    has_content = False
+    for step in [0, 1, 2, 3]:
+        step_name = f'Step_{step}'
+        step_dir = os.path.join(uploads_dir, step_name)
+        if os.path.exists(step_dir):
+            tar_cmd.extend(['-C', uploads_dir, step_name])
+            has_content = True
+    if os.path.exists(output_dir):
+        tar_cmd.extend(['-C', os.path.dirname(output_dir), os.path.basename(output_dir)])
+        has_content = True
 
-        output_dir = OUTPUT_FOLDER if os.path.isabs(OUTPUT_FOLDER) else os.path.abspath(OUTPUT_FOLDER)
-        if os.path.exists(output_dir):
-            for root, dirs, files in os.walk(output_dir):
-                for file in files:
-                    filepath = os.path.join(root, file)
-                    arcname = os.path.join('output', os.path.relpath(filepath, output_dir))
-                    zipf.write(filepath, arcname)
+    if not has_content:
+        return jsonify({'error': 'No results available to download'}), 404
 
-    response = send_file(temp_zip, as_attachment=True, download_name='sexfindr_results.zip')
+    proc = subprocess.Popen(tar_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    @response.call_on_close
-    def _after_download_cleanup():
+    def _stream_tar():
+        completed = False
         try:
-            _clear_pipeline_files()
-            _reset_pipeline_status_to_idle()
-        except Exception as e:
-            print(f"Post-download cleanup warning: {e}")
+            while True:
+                chunk = proc.stdout.read(1024 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+            rc = proc.wait()
+            completed = (rc == 0)
+            if not completed:
+                err = (proc.stderr.read() or b'').decode('utf-8', errors='replace')
+                print(f"tar stream failed (rc={rc}): {err[:4000]}")
+        except GeneratorExit:
+            # Client disconnected mid-download: stop tar and skip cleanup.
+            try:
+                proc.terminate()
+            except Exception:
+                pass
         finally:
             try:
-                if os.path.exists(temp_zip):
-                    os.remove(temp_zip)
-            except Exception as e:
-                print(f"Temp zip cleanup warning: {e}")
+                if proc.stdout:
+                    proc.stdout.close()
+            except Exception:
+                pass
+            try:
+                if proc.stderr:
+                    proc.stderr.close()
+            except Exception:
+                pass
+            if completed:
+                try:
+                    _clear_pipeline_files()
+                    _reset_pipeline_status_to_idle()
+                except Exception as e:
+                    print(f"Post-download cleanup warning: {e}")
 
+    response = Response(stream_with_context(_stream_tar()), mimetype='application/x-tar')
+    response.headers['Content-Disposition'] = 'attachment; filename=sexfindr_results.tar'
+    # Hint nginx not to buffer the whole payload.
+    response.headers['X-Accel-Buffering'] = 'no'
     return response
 
 

@@ -747,6 +747,15 @@ function displayResults(results) {
     
     let html = '<div class="results-grid">';
     
+    const makeDownloadHref = (step, file) => {
+        const stepPart = encodeURIComponent(String(step));
+        const pathPart = String(file)
+            .split('/')
+            .map(part => encodeURIComponent(part))
+            .join('/');
+        return `${API_BASE}/download/${stepPart}/${pathPart}`;
+    };
+
     for (const [step, files] of Object.entries(results)) {
         if (files.length > 0) {
             html += `
@@ -756,7 +765,7 @@ function displayResults(results) {
                         ${files.map(file => `
                             <li>
                                 <span>${file}</span>
-                                <a href="${API_BASE}/download/${step}/${file}" class="download-link" download>Download</a>
+                                <a href="${makeDownloadHref(step, file)}" class="download-link" download>Download</a>
                             </li>
                         `).join('')}
                     </ul>
