@@ -5,14 +5,17 @@
 const API_BASE = (typeof window !== 'undefined' && window.__SEXFINDR_API_BASE__ != null && window.__SEXFINDR_API_BASE__ !== '')
     ? String(window.__SEXFINDR_API_BASE__).replace(/\/$/, '')
     : `${window.location.origin}/api`.replace(/\/$/, '');
+// User-requested behavior: on refresh, if pipeline is idle, clear uploads/results from disk too.
+const AUTO_CLEAR_ON_REFRESH = true;
 
 // State
 let uploadedFiles = [];
 let statusCheckInterval = null;
 
 // Initialize
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     initializeEventListeners();
+    await autoClearOnRefreshIfIdle();
     checkSystemHealth();
     startStatusPolling();
     // Load existing files, sample lists, and pipeline paths on page load
@@ -24,6 +27,23 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('pipelinePathsSection').style.display = 'block';
     }
 });
+
+async function autoClearOnRefreshIfIdle() {
+    if (!AUTO_CLEAR_ON_REFRESH) return;
+    try {
+        const statusRes = await fetch(`${API_BASE}/status`);
+        if (!statusRes.ok) return;
+        const status = await statusRes.json();
+        if (status && status.status === 'running') {
+            // Never auto-clear while a pipeline is actively running.
+            return;
+        }
+        await fetch(`${API_BASE}/clear`, { method: 'POST' });
+        uploadedFiles = [];
+    } catch (e) {
+        console.warn('Auto-clear on refresh skipped:', e);
+    }
+}
 
 // Event Listeners
 function initializeEventListeners() {
