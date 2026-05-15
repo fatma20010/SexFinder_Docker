@@ -1185,15 +1185,25 @@ def download_all():
     zip_path = 'output/all_results.zip'
     
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        uploads_dir = _get_uploads_dir()
         # Add Step outputs
         for step in [0, 1, 2, 3]:
-            step_dir = f'uploads/Step_{step}'
+            step_dir = os.path.join(uploads_dir, f'Step_{step}')
             if os.path.exists(step_dir):
                 for root, dirs, files in os.walk(step_dir):
                     for file in files:
                         filepath = os.path.join(root, file)
                         arcname = os.path.join(f'Step_{step}', os.path.relpath(filepath, step_dir))
                         zipf.write(filepath, arcname)
+        
+        # Step 0 primary outputs are BAMs under uploads/data/bams (include them for FASTQ workflows).
+        bams_dir = os.path.join(uploads_dir, 'data', 'bams')
+        if os.path.exists(bams_dir):
+            for root, dirs, files in os.walk(bams_dir):
+                for file in files:
+                    filepath = os.path.join(root, file)
+                    arcname = os.path.join('data', 'bams', os.path.relpath(filepath, bams_dir))
+                    zipf.write(filepath, arcname)
         
         # Add output directory
         if os.path.exists(OUTPUT_FOLDER):
@@ -1285,6 +1295,11 @@ def download_all_and_clear():
         if os.path.exists(step_dir):
             tar_cmd.extend(['-C', uploads_dir, step_name])
             has_content = True
+    # Step 0 primary outputs are BAMs under uploads/data/bams.
+    bams_dir = os.path.join(uploads_dir, 'data', 'bams')
+    if os.path.exists(bams_dir):
+        tar_cmd.extend(['-C', uploads_dir, 'data/bams'])
+        has_content = True
     if os.path.exists(output_dir):
         tar_cmd.extend(['-C', os.path.dirname(output_dir), os.path.basename(output_dir)])
         has_content = True

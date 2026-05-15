@@ -5,8 +5,9 @@
 const API_BASE = (typeof window !== 'undefined' && window.__SEXFINDR_API_BASE__ != null && window.__SEXFINDR_API_BASE__ !== '')
     ? String(window.__SEXFINDR_API_BASE__).replace(/\/$/, '')
     : `${window.location.origin}/api`.replace(/\/$/, '');
-// User-requested behavior: on refresh, if pipeline is idle, clear uploads/results from disk too.
-const AUTO_CLEAR_ON_REFRESH = true;
+// Safety default: never delete server data on plain page refresh.
+// Use explicit "Clear Data" or "Download All + clear" flows instead.
+const AUTO_CLEAR_ON_REFRESH = false;
 
 // State
 let uploadedFiles = [];
