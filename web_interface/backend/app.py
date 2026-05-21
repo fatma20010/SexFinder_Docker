@@ -1193,7 +1193,8 @@ def download_all():
                 for root, dirs, files in os.walk(step_dir):
                     for file in files:
                         filepath = os.path.join(root, file)
-                        arcname = os.path.join(f'Step_{step}', os.path.relpath(filepath, step_dir))
+                        # Keep all pipeline artifacts under output/Step_* in the archive for non-technical users.
+                        arcname = os.path.join('output', f'Step_{step}', os.path.relpath(filepath, step_dir))
                         zipf.write(filepath, arcname)
         
         # Step 0 primary outputs are BAMs under uploads/data/bams (include them for FASTQ workflows).
@@ -1202,7 +1203,7 @@ def download_all():
             for root, dirs, files in os.walk(bams_dir):
                 for file in files:
                     filepath = os.path.join(root, file)
-                    arcname = os.path.join('data', 'bams', os.path.relpath(filepath, bams_dir))
+                    arcname = os.path.join('output', 'Step_0', 'bams', os.path.relpath(filepath, bams_dir))
                     zipf.write(filepath, arcname)
         
         # Add output directory
@@ -1293,12 +1294,13 @@ def download_all_and_clear():
         step_name = f'Step_{step}'
         step_dir = os.path.join(uploads_dir, step_name)
         if os.path.exists(step_dir):
-            tar_cmd.extend(['-C', uploads_dir, step_name])
+            # Present step artifacts as output/Step_* in the archive.
+            tar_cmd.extend(['--transform', f's,^Step_{step},output/Step_{step},', '-C', uploads_dir, step_name])
             has_content = True
     # Step 0 primary outputs are BAMs under uploads/data/bams.
     bams_dir = os.path.join(uploads_dir, 'data', 'bams')
     if os.path.exists(bams_dir):
-        tar_cmd.extend(['-C', uploads_dir, 'data/bams'])
+        tar_cmd.extend(['--transform', r's,^data/bams,output/Step_0/bams,', '-C', uploads_dir, 'data/bams'])
         has_content = True
     if os.path.exists(output_dir):
         tar_cmd.extend(['-C', os.path.dirname(output_dir), os.path.basename(output_dir)])
