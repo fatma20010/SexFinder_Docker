@@ -874,6 +874,16 @@ def collect_results():
                     results['step_1'].append(file)
         except Exception as e:
             print(f"Error collecting Step 1 results: {e}")
+
+    # Collect Step 0 primary FASTQ outputs (BAM/BAI) from uploads/data/bams
+    bams_dir = os.path.join(upload_dir, 'data', 'bams')
+    if os.path.exists(bams_dir):
+        try:
+            for file in os.listdir(bams_dir):
+                if file.endswith('.bam') or file.endswith('.bam.bai') or file.endswith('.bai'):
+                    results['step_0'].append(f"data/bams/{file}")
+        except Exception as e:
+            print(f"Error collecting Step 0 BAM results: {e}")
     
     # Collect output directory results
     if os.path.exists(output_dir):
@@ -1170,6 +1180,7 @@ def download_file(step, filename):
 
     candidates = [
         os.path.join(uploads_root, f'Step_{step_part}', rel_name),
+        os.path.join(uploads_root, rel_name),
         os.path.join(output_root, f'Step_{step_part}', rel_name),
         os.path.join(output_root, rel_name),
     ]
