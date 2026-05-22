@@ -801,17 +801,18 @@ function displayResults(results) {
 
 async function downloadAllResults() {
     try {
-        // Server streams a zip and clears uploads/outputs after the response closes.
-        window.location.href = `${API_BASE}/download-all-and-clear`;
-        showToast('Download started. Data will be reset after download finishes.', 'success');
-        // Refresh UI shortly after download trigger so users see the clean state on next interaction.
-        setTimeout(() => {
-            refreshFileList();
-            loadResults();
-            checkRunButtonState();
-        }, 2500);
+        if (!confirm('This will clear uploaded files, step files, and output from server storage, then refresh the page. Continue?')) {
+            return;
+        }
+        const res = await fetch(`${API_BASE}/clear`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) {
+            throw new Error(data.error || 'Reset failed');
+        }
+        showToast('Workspace reset complete. Refreshing...', 'success');
+        setTimeout(() => window.location.reload(), 600);
     } catch (error) {
-        showToast('Download error: ' + error.message, 'error');
+        showToast('Reset error: ' + error.message, 'error');
     }
 }
 
