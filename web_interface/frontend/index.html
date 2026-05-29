@@ -107,21 +107,19 @@
                 </div>
             </section>
 
-            <!-- Pipeline paths (required for FASTQ / Step 0) -->
-            <section class="card" id="pipelinePathsSection">
-                <h2>Pipeline paths (required for FASTQ → Step 0)</h2>
-                <p class="card-description">Full path on your computer to the reference genome file and Bowtie2 index folder. Save after filling.</p>
+            <!-- Reference genome (required for FASTQ / Step 0) -->
+            <section class="card" id="referenceGenomeSection" style="display: none;">
+                <h2>Reference genome (required for FASTQ → Step 0)</h2>
+                <p class="card-description">Upload one reference genome file (.fna, .fa, .fasta). Bowtie2 index is built automatically inside Docker.</p>
                 <div class="form-group">
-                    <label for="referenceGenomePath">Reference genome file path</label>
-                    <input type="text" id="referenceGenomePath" placeholder="e.g. C:\Users\...\GCA_907165135.1_OKI2018_I68_1.0_genomic.fna">
-                    <small>Full path to the .fna reference file (one file).</small>
+                    <label for="referenceGenomeFileInput">Reference genome file</label>
+                    <input type="file" id="referenceGenomeFileInput" accept=".fna,.fa,.fasta">
+                    <small>Keep exactly one reference file. If you replace it, Bowtie2 index will be rebuilt automatically.</small>
                 </div>
-                <div class="form-group">
-                    <label for="bowtie2IndexPath">Bowtie2 index directory path</label>
-                    <input type="text" id="bowtie2IndexPath" placeholder="e.g. C:\Users\...\bowtie2_index">
-                    <small>Full path to the folder containing the .bt2 index files (e.g. Oikopleura_dioica.1.bt2).</small>
+                <div id="referenceGenomeStatus" class="uploaded-files">
+                    <p style="color: var(--text-secondary); font-style: italic;">No reference genome uploaded yet.</p>
                 </div>
-                <button id="savePipelinePathsButton" class="btn btn-secondary">Save pipeline paths</button>
+                <button id="clearReferenceGenomeButton" class="btn btn-secondary">Remove reference genome</button>
             </section>
 
             <!-- Step 2: Configure Parameters -->

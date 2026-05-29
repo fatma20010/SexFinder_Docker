@@ -18,6 +18,7 @@ import re
 import io
 import uuid
 import shlex
+from glob import glob
 
 
 def _set_multipart_tmpdir_first():
@@ -92,7 +93,14 @@ def bowtie2_host_dir_for_mount(path):
 # Configuration (before app: used for MAX_CONTENT_LENGTH)
 UPLOAD_FOLDER = 'uploads'
 OUTPUT_FOLDER = 'output'
-ALLOWED_EXTENSIONS = {'fastq', 'fq', 'bam', 'vcf', 'gz'}
+ALLOWED_EXTENSIONS_BY_TYPE = {
+    'fastq': {'fastq', 'fq', 'gz'},
+    'bam': {'bam'},
+    'vcf': {'vcf', 'gz'},
+    'reference': {'fna', 'fa', 'fasta'},
+}
+ALLOWED_EXTENSIONS = set().union(*ALLOWED_EXTENSIONS_BY_TYPE.values())
+BOWTIE2_INDEX_PREFIX = 'Oikopleura_dioica'
 # Single-file upload limit (nginx client_max_body_size should match order-of-magnitude)
 MAX_FILE_SIZE = 40 * 1024 * 1024 * 1024  # 40 GiB — large merged BAMs can be 20–30+ GiB
 
@@ -148,12 +156,23 @@ _ensure_dir(OUTPUT_FOLDER)
 _ensure_dir(os.path.join(UPLOAD_FOLDER, 'data', 'fastq'))
 _ensure_dir(os.path.join(UPLOAD_FOLDER, 'data', 'bams'))
 _ensure_dir(os.path.join(UPLOAD_FOLDER, 'data', 'vcfs'))
+_ensure_dir(os.path.join(UPLOAD_FOLDER, 'data', 'bowtie2_index'))
+_ensure_dir(os.path.join(UPLOAD_FOLDER, 'reference'))
 for step_num in [0, 1, 2, 3]:
     _ensure_dir(os.path.join(UPLOAD_FOLDER, f'Step_{step_num}'))
 
 def allowed_file(filename):
     """Check if file extension is allowed"""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def allowed_file_for_type(filename: str, data_type: str) -> bool:
+    """Check extension per upload type."""
+    ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+    allowed = ALLOWED_EXTENSIONS_BY_TYPE.get(data_type)
+    if not allowed:
+        return False
+    return ext in allowed
 
 
 def _uploads_data_base() -> str:
@@ -173,7 +192,78 @@ def _upload_path_for_type(data_type: str) -> str:
         return os.path.join(base, 'bams')
     if data_type == 'vcf':
         return os.path.join(base, 'vcfs')
+    if data_type == 'reference':
+        return os.path.join(_get_uploads_dir(), 'reference')
     raise ValueError(f'Invalid data type: {data_type}')
+
+
+def _list_reference_files():
+    ref_dir = _upload_path_for_type('reference')
+    if not os.path.exists(ref_dir):
+        return []
+    out = []
+    for name in os.listdir(ref_dir):
+        path = os.path.join(ref_dir, name)
+        if not os.path.isfile(path):
+            continue
+        if not allowed_file_for_type(name, 'reference'):
+            continue
+        out.append({
+            'name': name,
+            'size': os.path.getsize(path),
+            'mtime': os.path.getmtime(path),
+        })
+    out.sort(key=lambda x: x['mtime'], reverse=True)
+    return out
+
+
+def _resolve_reference_genome_file() -> str:
+    """Return exactly one uploaded reference genome file name or raise with user-facing error."""
+    files = _list_reference_files()
+    if not files:
+        raise Exception(
+            "No reference genome uploaded. Upload one .fna/.fa/.fasta file in the Reference genome section."
+        )
+    if len(files) > 1:
+        names = ', '.join(f['name'] for f in files[:5])
+        raise Exception(
+            "Multiple reference genome files found. Keep exactly one file in Reference genome. "
+            f"Currently found: {names}"
+        )
+    return files[0]['name']
+
+
+def _bowtie2_index_ready(uploads_dir: str) -> bool:
+    idx_dir = os.path.join(uploads_dir, 'data', 'bowtie2_index')
+    pattern = os.path.join(idx_dir, f'{BOWTIE2_INDEX_PREFIX}*.bt2*')
+    return any(os.path.isfile(p) for p in glob(pattern))
+
+
+def _build_bowtie2_index_in_docker(upload_dir_abs: str, reference_filename: str) -> None:
+    """
+    Build bowtie2 index from uploaded reference in the SexFindR image.
+    Output prefix: /sexfindr/data/bowtie2_index/Oikopleura_dioica
+    """
+    ref_q = shlex.quote(f'/sexfindr/reference/{reference_filename}')
+    prefix_q = shlex.quote(f'/sexfindr/data/bowtie2_index/{BOWTIE2_INDEX_PREFIX}')
+    inner = (
+        'set -e; '
+        'mkdir -p /sexfindr/data/bowtie2_index; '
+        f'bowtie2-build {ref_q} {prefix_q}'
+    )
+    cmd = [
+        'docker', 'run', '--rm',
+        '-v', f'{upload_dir_abs}/data:/sexfindr/data',
+        '-v', f'{upload_dir_abs}/reference:/sexfindr/reference',
+        'sexfindr:latest',
+        'bash', '-lc', inner,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=86400)
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or '').strip()
+        if not err:
+            err = f'bowtie2-build failed (exit {proc.returncode}).'
+        raise Exception(err)
 
 
 # awk: extract chrom\tlength from @SQ (same idea as patched DifCover from_bams_to_unionbed.sh)
@@ -300,8 +390,9 @@ def upload_init():
     total_size = int(data.get('total_size') or 0)
     if not filename:
         return jsonify({'error': 'filename required'}), 400
-    if not allowed_file(filename):
-        return jsonify({'error': f'File type not allowed. Allowed: {ALLOWED_EXTENSIONS}'}), 400
+    if not allowed_file_for_type(filename, data_type):
+        allowed = sorted(ALLOWED_EXTENSIONS_BY_TYPE.get(data_type, []))
+        return jsonify({'error': f'File type not allowed for {data_type}. Allowed: {allowed}'}), 400
     try:
         upload_path = _upload_path_for_type(data_type)
     except ValueError as e:
@@ -361,8 +452,9 @@ def upload_chunk():
 
     if not upload_id or not filename:
         return jsonify({'error': 'Missing upload_id or filename'}), 400
-    if not allowed_file(filename):
-        return jsonify({'error': f'File type not allowed. Allowed: {ALLOWED_EXTENSIONS}'}), 400
+    if not allowed_file_for_type(filename, data_type):
+        allowed = sorted(ALLOWED_EXTENSIONS_BY_TYPE.get(data_type, []))
+        return jsonify({'error': f'File type not allowed for {data_type}. Allowed: {allowed}'}), 400
     try:
         _ = _upload_path_for_type(data_type)  # validate
     except ValueError as e:
@@ -500,11 +592,7 @@ def run_pipeline_step(step, data_type=None, adjustment_coefficient=1.0):
         os.makedirs(os.path.join(upload_dir, f'Step_{step_num}'), exist_ok=True)
     
     # Pipeline paths come from frontend only (no hardcoded backend paths)
-    pipeline_paths = load_pipeline_paths()
-    ref_genome_host = (pipeline_paths.get('reference_genome_path') or '').strip()
-    bowtie2_index_host = (pipeline_paths.get('bowtie2_index_path') or '').strip()
-
-    # Fixed paths inside the pipeline container (we mount user paths here)
+    # Fixed paths inside the pipeline container.
     ref_genome_container = '/sexfindr/reference/genome.fna'
     bowtie2_index_container = '/sexfindr/data/bowtie2_index'
 
@@ -544,10 +632,7 @@ def run_pipeline_step(step, data_type=None, adjustment_coefficient=1.0):
         output_dir_abs = output_dir.replace('\\', '/')
         config_path_abs = config_path.replace('\\', '/')
 
-    ref_genome_host_abs = norm(ref_genome_host) if ref_genome_host else ''
-    bowtie2_index_host_abs = (
-        bowtie2_host_dir_for_mount(bowtie2_index_host) if bowtie2_index_host else ''
-    )
+    reference_dir_abs = norm(os.path.join(host_uploads, 'reference')) if os.path.exists('/app') else os.path.join(upload_dir_abs, 'reference')
 
     docker_cmd = [
         'docker', 'run', '--rm',
@@ -558,11 +643,8 @@ def run_pipeline_step(step, data_type=None, adjustment_coefficient=1.0):
         '-v', f'{upload_dir_abs}/Step_3:/sexfindr/Step_3',
         '-v', f'{config_path_abs}:/sexfindr/config.sh',
         '-v', f'{output_dir_abs}:/sexfindr/output',
+        '-v', f'{reference_dir_abs}:/sexfindr/reference',
     ]
-    if ref_genome_host_abs:
-        docker_cmd.extend(['-v', f'{ref_genome_host_abs}:{ref_genome_container}'])
-    if bowtie2_index_host_abs:
-        docker_cmd.extend(['-v', f'{bowtie2_index_host_abs}:{bowtie2_index_container}'])
 
     docker_cmd.append('sexfindr:latest')
     
@@ -664,23 +746,18 @@ def run_pipeline_step(step, data_type=None, adjustment_coefficient=1.0):
                 "Sample lists are empty. Please add sample IDs to the Male/Female sample lists above."
             )
 
-        if not ref_genome_host or not bowtie2_index_host:
-            raise Exception(
-                "Pipeline paths are required for Step 0 (FASTQ mapping). "
-                "Please fill in 'Reference genome path' and 'Bowtie2 index path' in the 'Pipeline paths' section above, then save."
+        reference_filename = _resolve_reference_genome_file()
+        ref_genome_container = f'/sexfindr/reference/{reference_filename}'
+        _merge_mapping_paths_into_config(
+            reference_genome=ref_genome_container,
+            bowtie2_index_prefix=f'{bowtie2_index_container}/{BOWTIE2_INDEX_PREFIX}',
+        )
+        if not _bowtie2_index_ready(upload_dir):
+            pipeline_status['message'] = (
+                f'Building Bowtie2 index from {reference_filename}. '
+                'This runs once per reference and may take a while.'
             )
-        # When running locally (not in Docker), optionally check that paths exist
-        if not os.path.exists('/app'):
-            if not os.path.exists(ref_genome_host):
-                raise Exception(
-                    f"Reference genome file not found at the path you entered:\n{ref_genome_host}\n"
-                    "Please correct the path in the Pipeline paths section."
-                )
-            if not os.path.exists(bowtie2_index_host):
-                raise Exception(
-                    f"Bowtie2 index directory not found at the path you entered:\n{bowtie2_index_host}\n"
-                    "Please correct the path in the Pipeline paths section."
-                )
+            _build_bowtie2_index_in_docker(upload_dir_abs, reference_filename)
         
         # Always refresh Step 0 script from template with LF line endings (mount may have CRLF from Windows).
         script_path = os.path.join(step0_dir, 'run_step0_mapping.sh')
@@ -709,7 +786,7 @@ def run_pipeline_step(step, data_type=None, adjustment_coefficient=1.0):
         ]
         
         pipeline_status['current_step'] = 'Step 0: Mapping FASTQ files'
-        pipeline_status['message'] = 'Mapping reads to reference genome...'
+        pipeline_status['message'] = f'Mapping reads to reference genome ({reference_filename})...'
 
     elif step == 2 and data_type == 'vcf':
         # Step 2 (web UI): SNP density per VCF using VCFtools (installed in sexfindr image)
@@ -948,8 +1025,9 @@ def upload_file():
     if file.filename == '':
         return jsonify({'error': 'No file selected'}), 400
     
-    if not allowed_file(file.filename):
-        return jsonify({'error': f'File type not allowed. Allowed: {ALLOWED_EXTENSIONS}'}), 400
+    if not allowed_file_for_type(file.filename, data_type):
+        allowed = sorted(ALLOWED_EXTENSIONS_BY_TYPE.get(data_type, []))
+        return jsonify({'error': f'File type not allowed for {data_type}. Allowed: {allowed}'}), 400
     
     # Inside Docker container, uploads are at /app/uploads
     if os.path.exists('/app'):
@@ -967,6 +1045,13 @@ def upload_file():
         upload_path = os.path.join(upload_base, 'bams')
     elif data_type == 'vcf':
         upload_path = os.path.join(upload_base, 'vcfs')
+    elif data_type == 'reference':
+        if os.path.exists('/app'):
+            upload_path = '/app/uploads/reference'
+        else:
+            backend_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.dirname(backend_dir)
+            upload_path = os.path.join(project_root, 'uploads', 'reference')
     else:
         return jsonify({'error': f'Invalid data type: {data_type}'}), 400
     
@@ -1011,15 +1096,23 @@ def list_files():
     files = {
         'fastq': [],
         'bam': [],
-        'vcf': []
+        'vcf': [],
+        'reference': [],
     }
     
-    for dtype in ['fastq', 'bam', 'vcf']:
+    for dtype in ['fastq', 'bam', 'vcf', 'reference']:
         if data_type and data_type != dtype:
             continue
         
         if dtype == 'bam':
             dir_path = os.path.join(upload_base, 'bams')
+        elif dtype == 'reference':
+            if os.path.exists('/app'):
+                dir_path = '/app/uploads/reference'
+            else:
+                backend_dir = os.path.dirname(os.path.abspath(__file__))
+                project_root = os.path.dirname(backend_dir)
+                dir_path = os.path.join(project_root, 'uploads', 'reference')
         else:
             dir_path = os.path.join(upload_base, f'{dtype}s')
         
@@ -1056,6 +1149,13 @@ def delete_file(data_type, filename):
         upload_path = os.path.join(upload_base, 'bams')
     elif data_type == 'vcf':
         upload_path = os.path.join(upload_base, 'vcfs')
+    elif data_type == 'reference':
+        if os.path.exists('/app'):
+            upload_path = '/app/uploads/reference'
+        else:
+            backend_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.dirname(backend_dir)
+            upload_path = os.path.join(project_root, 'uploads', 'reference')
     else:
         return jsonify({'error': 'Invalid data type'}), 400
     
@@ -1076,6 +1176,43 @@ def delete_file(data_type, filename):
         return jsonify({'message': 'File deleted successfully'})
     except Exception as e:
         return jsonify({'error': f'Failed to delete file: {str(e)}'}), 500
+
+
+@app.route('/api/reference-genome', methods=['GET'])
+def get_reference_genome():
+    """Current uploaded reference file and Bowtie2 index readiness."""
+    files = _list_reference_files()
+    active = files[0] if len(files) == 1 else None
+    return jsonify({
+        'files': [{'name': f['name'], 'size': f['size']} for f in files],
+        'active_file': {'name': active['name'], 'size': active['size']} if active else None,
+        'multiple_files': len(files) > 1,
+        'index_ready': _bowtie2_index_ready(_get_uploads_dir()),
+        'index_prefix': BOWTIE2_INDEX_PREFIX,
+    })
+
+
+@app.route('/api/reference-genome', methods=['DELETE'])
+def clear_reference_genome():
+    """Remove uploaded reference genomes and cached Bowtie2 index files."""
+    try:
+        ref_dir = _upload_path_for_type('reference')
+        if os.path.exists(ref_dir):
+            for name in os.listdir(ref_dir):
+                path = os.path.join(ref_dir, name)
+                if os.path.isfile(path):
+                    os.remove(path)
+        idx_dir = os.path.join(_get_uploads_dir(), 'data', 'bowtie2_index')
+        if os.path.exists(idx_dir):
+            for name in os.listdir(idx_dir):
+                path = os.path.join(idx_dir, name)
+                if os.path.isfile(path):
+                    os.remove(path)
+                elif os.path.isdir(path):
+                    shutil.rmtree(path, ignore_errors=True)
+        return jsonify({'message': 'Reference genome and index cleared'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/run', methods=['POST'])
@@ -1249,13 +1386,22 @@ def _clear_pipeline_files():
     data_dir = os.path.join(uploads_dir, 'data')
 
     # Clear uploaded inputs
-    for sub in ['fastq', 'bams', 'vcfs']:
+    for sub in ['fastq', 'bams', 'vcfs', 'bowtie2_index']:
         dir_path = os.path.join(data_dir, sub)
         if os.path.exists(dir_path):
             for file in os.listdir(dir_path):
                 filepath = os.path.join(dir_path, file)
                 if os.path.isfile(filepath):
                     os.remove(filepath)
+                elif os.path.isdir(filepath):
+                    shutil.rmtree(filepath, ignore_errors=True)
+
+    reference_dir = os.path.join(uploads_dir, 'reference')
+    if os.path.exists(reference_dir):
+        for file in os.listdir(reference_dir):
+            filepath = os.path.join(reference_dir, file)
+            if os.path.isfile(filepath):
+                os.remove(filepath)
 
     # Clear Step_* intermediate folders
     for step_num in [0, 1, 2, 3]:
@@ -1402,6 +1548,32 @@ def _merge_adjustment_into_config(adjustment_coefficient):
             data = data.rstrip() + '\n' + line
     else:
         data = '#!/bin/bash\n' + line
+    with open(config_path, 'w', encoding='utf-8') as f:
+        f.write(data)
+
+
+def _merge_mapping_paths_into_config(reference_genome, bowtie2_index_prefix):
+    """
+    Keep REFERENCE_GENOME and BOWTIE2_INDEX in uploads/config.sh synced with uploaded assets.
+    """
+    config_path = os.path.join(_get_uploads_dir(), 'config.sh')
+    if os.path.exists(config_path):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            data = f.read()
+    else:
+        data = '#!/bin/bash\n'
+
+    replacements = {
+        'REFERENCE_GENOME': reference_genome,
+        'BOWTIE2_INDEX': bowtie2_index_prefix,
+    }
+    for key, value in replacements.items():
+        line = f'{key}={value}\n'
+        if re.search(rf'(?m)^{key}=', data):
+            data = re.sub(rf'(?m)^{key}=.*\n?', line, data)
+        else:
+            data = data.rstrip() + '\n' + line
+
     with open(config_path, 'w', encoding='utf-8') as f:
         f.write(data)
 

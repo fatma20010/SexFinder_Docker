@@ -12,6 +12,7 @@ const AUTO_CLEAR_ON_REFRESH = false;
 // State
 let uploadedFiles = [];
 let statusCheckInterval = null;
+let referenceGenomeInfo = { active_file: null, multiple_files: false, index_ready: false };
 
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
@@ -21,11 +22,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     startStatusPolling();
     // Load existing files, sample lists, and pipeline paths on page load
     refreshFileList();
-    loadPipelinePaths();
+    refreshReferenceGenomeInfo();
     const dataType = document.querySelector('input[name="dataType"]:checked').value;
     if (dataType === 'fastq') {
         loadSampleLists();
-        document.getElementById('pipelinePathsSection').style.display = 'block';
+        document.getElementById('referenceGenomeSection').style.display = 'block';
     }
 });
 
@@ -76,16 +77,16 @@ function initializeEventListeners() {
         radio.addEventListener('change', async () => {
             const dataType = radio.value;
             const sampleListsSection = document.getElementById('sampleListsSection');
-            const pipelinePathsSection = document.getElementById('pipelinePathsSection');
+            const referenceGenomeSection = document.getElementById('referenceGenomeSection');
             const bamStep1Help = document.getElementById('bamStep1Help');
             if (dataType === 'fastq') {
                 sampleListsSection.style.display = 'block';
-                pipelinePathsSection.style.display = 'block';
+                referenceGenomeSection.style.display = 'block';
                 await loadSampleLists();
-                await loadPipelinePaths();
+                await refreshReferenceGenomeInfo();
             } else {
                 sampleListsSection.style.display = 'none';
-                pipelinePathsSection.style.display = 'none';
+                referenceGenomeSection.style.display = 'none';
             }
             if (bamStep1Help) {
                 bamStep1Help.style.display = dataType === 'bam' ? 'block' : 'none';
@@ -103,14 +104,21 @@ function initializeEventListeners() {
     }
     if (initialDataType === 'fastq') {
         const sampleListsSection = document.getElementById('sampleListsSection');
-        const pipelinePathsSection = document.getElementById('pipelinePathsSection');
+        const referenceGenomeSection = document.getElementById('referenceGenomeSection');
         if (sampleListsSection) sampleListsSection.style.display = 'block';
-        if (pipelinePathsSection) pipelinePathsSection.style.display = 'block';
+        if (referenceGenomeSection) referenceGenomeSection.style.display = 'block';
         loadSampleLists();
     }
 
-    // Pipeline paths
-    document.getElementById('savePipelinePathsButton').addEventListener('click', savePipelinePaths);
+    // Reference genome upload
+    const referenceGenomeInput = document.getElementById('referenceGenomeFileInput');
+    if (referenceGenomeInput) {
+        referenceGenomeInput.addEventListener('change', handleReferenceGenomeSelect);
+    }
+    const clearReferenceGenomeButton = document.getElementById('clearReferenceGenomeButton');
+    if (clearReferenceGenomeButton) {
+        clearReferenceGenomeButton.addEventListener('click', clearReferenceGenome);
+    }
 
     // Sample lists buttons
     document.getElementById('saveSampleListsButton').addEventListener('click', saveSampleLists);
@@ -229,6 +237,36 @@ async function handleFiles(files) {
 
     updateUploadedFilesDisplay();
     checkRunButtonState();
+}
+
+async function handleReferenceGenomeSelect(e) {
+    const file = e.target.files && e.target.files[0] ? e.target.files[0] : null;
+    if (!file) return;
+    try {
+        await uploadFileChunked(file, 'reference');
+        await refreshReferenceGenomeInfo();
+        checkRunButtonState();
+    } finally {
+        e.target.value = '';
+    }
+}
+
+async function clearReferenceGenome() {
+    if (!confirm('Remove uploaded reference genome and Bowtie2 index cache?')) {
+        return;
+    }
+    try {
+        const response = await fetch(`${API_BASE}/reference-genome`, { method: 'DELETE' });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(result.error || 'Failed to remove reference genome');
+        }
+        showToast('Reference genome removed', 'success');
+        await refreshReferenceGenomeInfo();
+        checkRunButtonState();
+    } catch (error) {
+        showToast(`Error: ${error.message}`, 'error');
+    }
 }
 
 async function refreshFileList() {
@@ -864,20 +902,20 @@ function checkRunButtonState() {
         
         const maleIds = cleanSampleList(maleSamples);
         const femaleIds = cleanSampleList(femaleSamples);
-        const refPath = document.getElementById('referenceGenomePath') ? document.getElementById('referenceGenomePath').value.trim() : '';
-        const bowtie2Path = document.getElementById('bowtie2IndexPath') ? document.getElementById('bowtie2IndexPath').value.trim() : '';
-        const hasPaths = !!(refPath && bowtie2Path);
+        const hasReferenceGenome = !!referenceGenomeInfo.active_file && !referenceGenomeInfo.multiple_files;
 
         const hasFiles = uploadedFiles.length > 0;
         const hasSamples = (maleIds.length > 0 || femaleIds.length > 0);
-        button.disabled = !(hasFiles && hasSamples && hasPaths);
+        button.disabled = !(hasFiles && hasSamples && hasReferenceGenome);
 
         if (!hasFiles) {
             button.title = 'Please upload FASTQ files first';
         } else if (!hasSamples) {
             button.title = 'Please add sample IDs to the sample lists';
-        } else if (!hasPaths) {
-            button.title = 'Please set Reference genome path and Bowtie2 index path in the Pipeline paths section, then Save';
+        } else if (!hasReferenceGenome) {
+            button.title = referenceGenomeInfo.multiple_files
+                ? 'Please keep only one reference genome file in the Reference genome section'
+                : 'Please upload one reference genome file in the Reference genome section';
         } else {
             button.title = '';
         }
@@ -960,41 +998,51 @@ function showToast(message, type = 'success') {
     }, 3000);
 }
 
-// Pipeline paths (reference genome, bowtie2 index)
-async function loadPipelinePaths() {
+async function refreshReferenceGenomeInfo() {
     try {
-        const response = await fetch(`${API_BASE}/pipeline-paths`);
+        const response = await fetch(`${API_BASE}/reference-genome`);
         const data = await response.json();
-        const refEl = document.getElementById('referenceGenomePath');
-        const bowtie2El = document.getElementById('bowtie2IndexPath');
-        if (refEl) refEl.value = data.reference_genome_path || '';
-        if (bowtie2El) bowtie2El.value = data.bowtie2_index_path || '';
+        referenceGenomeInfo = {
+            active_file: data.active_file || null,
+            multiple_files: !!data.multiple_files,
+            index_ready: !!data.index_ready,
+        };
+        updateReferenceGenomeStatus(data);
+        checkRunButtonState();
     } catch (e) {
-        console.error('Error loading pipeline paths:', e);
+        console.error('Error loading reference genome info:', e);
     }
 }
 
-async function savePipelinePaths() {
-    const refEl = document.getElementById('referenceGenomePath');
-    const bowtie2El = document.getElementById('bowtie2IndexPath');
-    const reference_genome_path = refEl ? refEl.value.trim() : '';
-    const bowtie2_index_path = bowtie2El ? bowtie2El.value.trim() : '';
-    try {
-        const response = await fetch(`${API_BASE}/pipeline-paths`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ reference_genome_path, bowtie2_index_path })
-        });
-        const result = await response.json();
-        if (response.ok) {
-            showToast('Pipeline paths saved. You can run the pipeline when using FASTQ.', 'success');
-            checkRunButtonState();
-        } else {
-            showToast(result.error || 'Failed to save paths', 'error');
-        }
-    } catch (e) {
-        showToast('Error saving pipeline paths: ' + e.message, 'error');
+function updateReferenceGenomeStatus(info) {
+    const container = document.getElementById('referenceGenomeStatus');
+    if (!container) return;
+
+    if (!info || !Array.isArray(info.files) || info.files.length === 0) {
+        container.innerHTML = '<p style="color: var(--text-secondary); font-style: italic;">No reference genome uploaded yet.</p>';
+        return;
     }
+
+    if (info.multiple_files) {
+        container.innerHTML = `
+            <h3 style="margin-bottom: 0.5rem; color: var(--danger-color);">Multiple reference files detected</h3>
+            <p style="margin-bottom: 0.75rem;">Keep only one file. Current files:</p>
+            <ul style="margin-left: 1rem;">
+                ${info.files.map(f => `<li>${f.name} (${formatFileSize(f.size || 0)})</li>`).join('')}
+            </ul>
+        `;
+        return;
+    }
+
+    const ref = info.active_file;
+    const indexStatus = info.index_ready
+        ? '<span style="color: var(--success-color);">Bowtie2 index: ready</span>'
+        : '<span style="color: var(--warning-color);">Bowtie2 index: will be built on first FASTQ run</span>';
+    container.innerHTML = `
+        <h3 style="margin-bottom: 0.5rem;">Reference genome</h3>
+        <p><strong>${ref.name}</strong> (${formatFileSize(ref.size || 0)})</p>
+        <p>${indexStatus}</p>
+    `;
 }
 
 // Sample Lists Management
