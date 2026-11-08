@@ -1,6 +1,7 @@
 # Run from the web_interface directory: cd web_interface && docker-compose up
 services:
   backend:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -25,6 +26,7 @@ services:
       - sexfindr-network
 
   frontend:
+    restart: unless-stopped
     build:
       context: ./frontend
       dockerfile: Dockerfile
